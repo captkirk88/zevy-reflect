@@ -1,0 +1,19 @@
+.{
+    .name = .zevy_reflect,
+
+    .version = "0.0.1",
+
+    .fingerprint = 0xac92e58cc6d82cf1, // Changing this has security and trust implications.
+
+    .minimum_zig_version = "0.15.2",
+
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        // For example...
+        //"LICENSE",
+        //"README.md",
+    },
+}
