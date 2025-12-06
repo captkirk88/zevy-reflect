@@ -212,5 +212,4 @@ if (tracker.isChanged()) {
 
 ## Related Projects
 
-- [zevy-ecs](https://github.com/captkirk88/zevy-ecs) - Entity Component System framework that uses zevy-reflect for serialization</content>
-<parameter name="filePath">h:\Projects\zig\zevy-reflect\README.md
+- [zevy-ecs](https://github.com/captkirk88/zevy-ecs) - Entity Component System framework that uses zevy-reflect for serialization
