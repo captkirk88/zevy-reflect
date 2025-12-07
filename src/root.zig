@@ -32,9 +32,6 @@ pub const ShallowTypeInfo = reflect.ShallowTypeInfo;
 
 pub const Change = change.Change;
 
-// Decls
-pub const UnknownType = reflect.Unknown;
-
 // Funcs
 pub const getTypeInfo = reflect.getTypeInfo;
 pub const getReflectInfo = reflect.getInfo;
@@ -44,6 +41,8 @@ pub const hasField = reflect.hasField;
 pub const hasFunc = reflect.hasFunc;
 pub const hasFuncWithArgs = reflect.hasFuncWithArgs;
 pub const hasStruct = reflect.hasStruct;
+pub const hash = reflect.hash;
+pub const typeHash = reflect.typeHash;
 
 test {
     std.testing.refAllDeclsRecursive(@This());
