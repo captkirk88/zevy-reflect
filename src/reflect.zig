@@ -285,8 +285,6 @@ pub const TypeInfo = struct {
     /// Helper for TypeInfo.from with cycle detection
     /// Uses direct type comparison at comptime instead of hashing to avoid branch quota issues.
     fn toTypeInfo(comptime T: type, comptime visited: []const ReflectInfo) TypeInfo {
-        const type_name = @typeName(T);
-
         // Use direct type comparison for cycle detection - cheaper at comptime
         inline for (visited) |info| {
             switch (info) {
@@ -297,8 +295,8 @@ pub const TypeInfo = struct {
             }
         }
 
-        // Compute hash only once at the end, not for cycle detection
-        const type_hash = hash(type_name);
+        const type_name = @typeName(T);
+        const type_hash = typeHash(T);
 
         // create stub reflect for T and append to visited so recursive refs can find it
         const stub_reflect = ReflectInfo{ .type = TypeInfo{ .hash = type_hash, .size = @sizeOf(T), .type = T, .name = type_name, .fields = &[_]FieldInfo{} } };
