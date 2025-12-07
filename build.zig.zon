@@ -5,7 +5,7 @@
 
     .fingerprint = 0xac92e58cc6d82cf1, // Changing this has security and trust implications.
 
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.15.1",
 
     .dependencies = .{},
     .paths = .{
@@ -13,7 +13,7 @@
         "build.zig.zon",
         "src",
         // For example...
-        //"LICENSE",
+        "LICENSE",
         //"README.md",
     },
 }
