@@ -853,11 +853,11 @@ pub fn getField(comptime T: type, field_name: []const u8) ?type {
         .@"union" => |info| break :blk info.fields,
         .pointer => |info| return getField(info.pointer.child),
         .optional => |info| return getField(info.optional.child),
-        else => return &[_]std.builtin.Type.Field{},
+        else => break :blk &[_]std.builtin.Type.StructField{},
     };
     inline for (fields) |field| {
         if (std.mem.eql(u8, field.name, field_name)) {
-            return @field(T, field.name);
+            return field.type;
         }
     }
     return null;
@@ -1026,6 +1026,24 @@ test "getFields - returns all field names" {
     try std.testing.expect(found_id);
     try std.testing.expect(found_name);
     try std.testing.expect(found_active);
+}
+
+test "getFieldType" {
+    const TestStruct = struct {
+        id: u32,
+        name: []const u8,
+        active: bool,
+    };
+
+    const id_type = getField(TestStruct, "id") orelse unreachable;
+    const name_type = getField(TestStruct, "name") orelse unreachable;
+    const active_type = getField(TestStruct, "active") orelse unreachable;
+    const non_existent_type = getField(TestStruct, "nonExistent");
+
+    try std.testing.expectEqualStrings(@typeName(u32), @typeName(id_type));
+    try std.testing.expectEqualStrings(@typeName([]const u8), @typeName(name_type));
+    try std.testing.expectEqualStrings(@typeName(bool), @typeName(active_type));
+    try std.testing.expect(non_existent_type == null);
 }
 
 test "reflect - primitive type" {
