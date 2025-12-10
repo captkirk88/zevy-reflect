@@ -40,6 +40,7 @@ pub const getFieldNames = reflect.getFields;
 pub const hasField = reflect.hasField;
 pub const hasFunc = reflect.hasFunc;
 pub const hasFuncWithArgs = reflect.hasFuncWithArgs;
+pub const verifyFuncWithArgs = reflect.verifyFuncWithArgs;
 pub const hasStruct = reflect.hasStruct;
 pub const hash = reflect.hash;
 pub const typeHash = reflect.typeHash;
