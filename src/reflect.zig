@@ -770,16 +770,20 @@ pub fn hasFunc(comptime T: type, comptime func_name: []const u8) bool {
 /// If arg_types is null, only the function name is checked.
 /// If `func_name` is a method of `T` you do not need to include the self reference.
 pub fn hasFuncWithArgs(comptime T: type, comptime func_name: []const u8, comptime arg_types: ?[]const type) bool {
+    return verifyFuncWithArgs(T, func_name, arg_types) catch false;
+}
+
+pub fn verifyFuncWithArgs(comptime T: type, comptime func_name: []const u8, comptime arg_types: ?[]const type) error{ NotAFunction, FuncDoesNotExist, IncorrectArgs }!bool {
     const type_info = @typeInfo(T);
     if (type_info == .pointer) {
         const Child = type_info.pointer.child;
-        return hasFuncWithArgs(Child, func_name, arg_types);
+        return verifyFuncWithArgs(Child, func_name, arg_types);
     } else if (type_info == .@"struct") {
-        if (!@hasDecl(T, func_name)) return false;
+        if (!@hasDecl(T, func_name)) return error.FuncDoesNotExist;
 
         const fn_type = @typeInfo(@TypeOf(@field(T, func_name)));
 
-        if (fn_type != .@"fn") return false;
+        if (fn_type != .@"fn") return error.NotAFunction;
 
         if (arg_types) |at| {
             // Check if first parameter is self (has type T, *T, or *const T)
@@ -792,11 +796,11 @@ pub fn hasFuncWithArgs(comptime T: type, comptime func_name: []const u8, comptim
             const start_idx = if (has_self_param) 1 else 0;
             const expected_len = at.len + start_idx;
 
-            if (fn_type.@"fn".params.len != expected_len) return false;
+            if (fn_type.@"fn".params.len != expected_len) return error.IncorrectArgs;
 
             inline for (0..at.len) |i| {
                 if (fn_type.@"fn".params[start_idx + i].type != at[i]) {
-                    return false;
+                    return error.IncorrectArgs;
                 }
             }
             return true;
@@ -896,6 +900,29 @@ test "hasFuncWithArgs - funcs with self only (no additional args)" {
     try std.testing.expect(comptime !hasFuncWithArgs(TestStruct, "combine", &[_]type{ i32, f32, i32 }));
 
     try std.testing.expect(comptime !hasFuncWithArgs(TestStruct, "nonExistent", &[_]type{})); // Function doesn't exist
+}
+
+test "verifyFuncWithArgs" {
+    const TestStruct = struct {
+        value: i32,
+
+        pub fn getValue(self: @This()) i32 {
+            return self.value;
+        }
+
+        pub fn add(self: @This(), other: i32) i32 {
+            return self.value + other;
+        }
+    };
+
+    try std.testing.expect(comptime verifyFuncWithArgs(TestStruct, "getValue", &[_]type{}) catch false);
+    try std.testing.expectError(error.IncorrectArgs, comptime verifyFuncWithArgs(TestStruct, "getValue", &[_]type{i32}));
+
+    try std.testing.expect(comptime verifyFuncWithArgs(TestStruct, "add", &[_]type{i32}) catch false);
+    try std.testing.expectError(error.IncorrectArgs, comptime verifyFuncWithArgs(TestStruct, "add", &[_]type{}));
+    try std.testing.expectError(error.IncorrectArgs, comptime verifyFuncWithArgs(TestStruct, "add", &[_]type{ i32, i32 }));
+
+    try std.testing.expectError(error.FuncDoesNotExist, comptime verifyFuncWithArgs(TestStruct, "nonExistent", &[_]type{}));
 }
 
 test "hasField" {
