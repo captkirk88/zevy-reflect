@@ -761,6 +761,8 @@ fn getDecls(comptime type_info: std.builtin.Type) []const std.builtin.Type.Decla
 }
 
 /// Check if a struct has a function with the given name
+///
+/// *Must be called at comptime.*
 pub fn hasFunc(comptime T: type, comptime func_name: []const u8) bool {
     return hasFuncWithArgs(T, func_name, null);
 }
@@ -769,10 +771,27 @@ pub fn hasFunc(comptime T: type, comptime func_name: []const u8) bool {
 ///
 /// If arg_types is null, only the function name is checked.
 /// If `func_name` is a method of `T` you do not need to include the self reference.
+///
+/// *Must be called at comptime.*
 pub fn hasFuncWithArgs(comptime T: type, comptime func_name: []const u8, comptime arg_types: ?[]const type) bool {
     return verifyFuncWithArgs(T, func_name, arg_types) catch false;
 }
 
+/// Verify that a struct has a function with the given name and argument types.
+///
+/// If the function exists and matches the argument types, returns true.
+///
+/// If the function does not exist, returns `error.FuncDoesNotExist`.
+///
+/// If the member with the given name is not a function, returns `error.NotAFunction`.
+///
+/// If the function exists but the argument types do not match, returns `error.IncorrectArgs`.
+///
+/// If `arg_types` is null, only the function name is checked.
+///
+/// If `func_name` is a method of `T` you do not need to include the self reference.
+///
+/// *Must be called at comptime.*
 pub fn verifyFuncWithArgs(comptime T: type, comptime func_name: []const u8, comptime arg_types: ?[]const type) error{ NotAFunction, FuncDoesNotExist, IncorrectArgs }!bool {
     const type_info = @typeInfo(T);
     if (type_info == .pointer) {
