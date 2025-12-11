@@ -58,6 +58,26 @@ if (reflect.hasFunc(MyStruct, "getId")) {
 }
 ```
 
+### Implements Interface Validation
+
+```zig
+const reflect = @import("zevy_reflect");
+const Drawable = struct {
+    pub fn draw(_: *@This()) void {};
+};
+
+const Circle = struct {
+    radius: f32,
+    pub fn draw(_: *@This()) void {
+        // draw..
+    }
+}
+
+pub fn draw(comptime DrawableImpl: Implements(Drawable), drawable: anytype) {
+    DrawableImpl.satisfies(drawable); // If not satisfied, a nice compile error will occur.
+}
+```
+
 ### Change Detection
 
 ```zig
