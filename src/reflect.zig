@@ -164,7 +164,11 @@ pub const FuncInfo = struct {
     ///
     /// *Does not need to be called at comptime.*
     pub inline fn toString(self: *const FuncInfo) []const u8 {
-        return comptime self.getStringRepresentation();
+        return comptime self.getStringRepresentation(false);
+    }
+
+    pub inline fn toStringOmitSelf(self: *const FuncInfo) []const u8 {
+        return comptime self.getStringRepresentation(true);
     }
 
     /// Check if this FuncInfo is equal to another
@@ -183,10 +187,13 @@ pub const FuncInfo = struct {
         return true;
     }
 
-    fn getStringRepresentation(self: *const FuncInfo) []const u8 {
+    fn getStringRepresentation(self: *const FuncInfo, omit_self: bool) []const u8 {
         var params_str: []const u8 = "";
         var first: bool = true;
-        inline for (self.params) |param| {
+        inline for (self.params, 0..) |param, i| {
+            // Skip first parameter if omit_self is true
+            if (omit_self and i == 0) continue;
+
             switch (param) {
                 .type => |ti| {
                     if (first) params_str = ti.name else params_str = std.fmt.comptimePrint("{s}, {s}", .{ params_str, ti.name });
@@ -312,7 +319,7 @@ pub const TypeInfo = struct {
         return ti;
     }
 
-    pub fn getField(self: *const TypeInfo, field_name: []const u8) ?FieldInfo {
+    pub inline fn getField(self: *const TypeInfo, field_name: []const u8) ?FieldInfo {
         inline for (self.fields) |field| {
             if (std.mem.eql(u8, field.type.name, field_name)) {
                 return field;
@@ -324,28 +331,28 @@ pub const TypeInfo = struct {
     /// Lazily look up a decl (type constant) by name.
     ///
     /// *Does not need to be called at comptime.*
-    pub fn getDecl(self: *const TypeInfo, comptime decl_name: []const u8) ?TypeInfo {
+    pub inline fn getDecl(self: *const TypeInfo, comptime decl_name: []const u8) ?TypeInfo {
         return comptime lazyGetDecl(self.type, decl_name);
     }
 
     /// Get a function by name.
     ///
     /// *Does not need to be called at comptime.*
-    pub fn getFunc(self: *const TypeInfo, comptime func_name: []const u8) ?FuncInfo {
+    pub inline fn getFunc(self: *const TypeInfo, comptime func_name: []const u8) ?FuncInfo {
         return comptime lazyGetFunc(self.type, func_name);
     }
 
     /// Get the names of all type decls (non-function declarations).
     ///
     /// *Must be called at comptime.*
-    pub fn getDeclNames(self: *const TypeInfo) []const []const u8 {
+    pub inline fn getDeclNames(self: *const TypeInfo) []const []const u8 {
         return comptime lazyGetDeclNames(self.type, .types_only);
     }
 
     /// Get the names of all function decls.
     ///
     /// *Must be called at comptime.*
-    pub fn getFuncNames(self: *const TypeInfo) []const []const u8 {
+    pub inline fn getFuncNames(self: *const TypeInfo) []const []const u8 {
         return comptime lazyGetDeclNames(self.type, .funcs_only);
     }
 
@@ -354,7 +361,7 @@ pub const TypeInfo = struct {
     /// Declaration can be a function or other public declaration.
     ///
     /// *Must be called at comptime.*
-    pub fn hasDecl(self: *const TypeInfo, comptime decl_name: []const u8) bool {
+    pub inline fn hasDecl(self: *const TypeInfo, comptime decl_name: []const u8) bool {
         if (comptime lazyGetDecl(self.type, decl_name) == null) {
             return comptime lazyGetFunc(self.type, decl_name) != null;
         }
@@ -380,7 +387,7 @@ pub const TypeInfo = struct {
     /// Check if this TypeInfo is equal to another (by hash and size)
     ///
     /// *Must be called at comptime.*
-    pub fn eql(self: *const TypeInfo, other: *const TypeInfo) bool {
+    pub inline fn eql(self: *const TypeInfo, other: *const TypeInfo) bool {
         return self.hash == other.hash and self.size == other.size;
     }
 
@@ -444,7 +451,7 @@ pub const ReflectInfo = union(enum) {
     /// Check if this ReflectInfo is equal to another
     ///
     /// *Must be called at comptime.*
-    pub fn eql(self: *const ReflectInfo, other: *const ReflectInfo) bool {
+    pub inline fn eql(self: *const ReflectInfo, other: *const ReflectInfo) bool {
         switch (self.*) {
             .type => |ti| {
                 switch (other.*) {
@@ -495,7 +502,7 @@ fn toReflectInfo(comptime T: type, comptime visited: []const ReflectInfo) ?Refle
 
     switch (type_info) {
         .pointer => |info| {
-            const Child = info.pointer.child;
+            const Child = info.child;
             // Handle pointer to opaque (like *anyopaque)
             if (@typeInfo(Child) == .@"opaque") {
                 return null;
@@ -506,19 +513,19 @@ fn toReflectInfo(comptime T: type, comptime visited: []const ReflectInfo) ?Refle
             return null;
         },
         .optional => |info| {
-            const Child = info.optional.child;
+            const Child = info.child;
             return toReflectInfo(Child, visited);
         },
         .array, .vector => |info| {
             const Child = switch (info) {
-                .array => info.array.child,
-                .vector => info.vector.child,
+                .array => info.child,
+                .vector => info.child,
                 else => void,
             };
             return toReflectInfo(Child, visited);
         },
         .error_union => |info| {
-            const Child = info.error_union.error_set;
+            const Child = info.error_set;
             return toReflectInfo(Child, visited);
         },
         .error_set => {
@@ -584,6 +591,10 @@ const DeclNameMode = enum {
 /// This avoids the comptime explosion by just collecting names.
 fn lazyGetDeclNames(comptime T: type, comptime mode: DeclNameMode) []const []const u8 {
     const type_info = @typeInfo(T);
+    if (type_info == .pointer) {
+        return lazyGetDeclNames(type_info.pointer.child, mode);
+    }
+
     const decls = getDecls(type_info);
     if (decls.len == 0) {
         return &[_][]const u8{};
@@ -615,6 +626,11 @@ fn lazyGetDeclNames(comptime T: type, comptime mode: DeclNameMode) []const []con
 /// Lazily look up a single decl (type constant) by name.
 /// Only processes the requested decl, avoiding comptime explosion.
 fn lazyGetDecl(comptime T: type, comptime decl_name: []const u8) ?TypeInfo {
+    const zig_type_info = @typeInfo(T);
+    if (zig_type_info == .pointer) {
+        return lazyGetDecl(zig_type_info.pointer.child, decl_name);
+    }
+
     if (!@hasDecl(T, decl_name)) {
         return null;
     }
@@ -644,6 +660,11 @@ fn lazyGetDecl(comptime T: type, comptime decl_name: []const u8) ?TypeInfo {
 /// Lazily look up a single function by name.
 /// Only processes the requested function, avoiding comptime explosion.
 fn lazyGetFunc(comptime T: type, comptime func_name: []const u8) ?FuncInfo {
+    const zig_type_info = @typeInfo(T);
+    if (zig_type_info == .pointer) {
+        return lazyGetFunc(zig_type_info.pointer.child, func_name);
+    }
+
     if (!@hasDecl(T, func_name)) {
         return null;
     }
@@ -677,7 +698,7 @@ fn lazyGetFunc(comptime T: type, comptime func_name: []const u8) ?FuncInfo {
 
     inline for (decl_type_info.@"fn".params) |param| {
         const param_type = param.type.?;
-        if (toReflectInfo(param_type, &[_]ReflectInfo{})) |info| {
+        if (comptime toReflectInfo(param_type, &[_]ReflectInfo{})) |info| {
             param_infos[valid_params] = info;
             valid_params += 1;
         } else {
@@ -686,12 +707,12 @@ fn lazyGetFunc(comptime T: type, comptime func_name: []const u8) ?FuncInfo {
     }
 
     const return_type_info = if (decl_type_info.@"fn".return_type) |ret_type|
-        toReflectInfo(ret_type, &[_]ReflectInfo{})
+        comptime toReflectInfo(ret_type, &[_]ReflectInfo{})
     else
         null;
 
     return FuncInfo{
-        .hash = hash(std.fmt.comptimePrint("{s}.{s}", .{ @typeName(T), func_name })),
+        .hash = typeHash(DeclType),
         .name = func_name,
         .params = param_infos[0..valid_params],
         .return_type = return_type_info,
@@ -699,11 +720,15 @@ fn lazyGetFunc(comptime T: type, comptime func_name: []const u8) ?FuncInfo {
 }
 
 /// Get full TypeInfo for a type
+///
+/// *Must be called at comptime*
 pub fn getTypeInfo(comptime T: type) TypeInfo {
     return comptime TypeInfo.from(T);
 }
 
 /// Get ReflectInfo for a type or null if unsupported
+///
+/// *Must be called at comptime*
 pub fn getInfo(comptime T: type) ?ReflectInfo {
     return comptime ReflectInfo.from(T);
 }
@@ -885,6 +910,17 @@ pub fn getField(comptime T: type, field_name: []const u8) ?type {
 /// Get the names of all fields in a struct
 pub fn getFields(comptime T: type) []const []const u8 {
     return std.meta.fieldNames(T);
+}
+
+/// Get the simple type name (without namespace/module prefixes)
+pub fn getSimpleTypeName(comptime T: type) []const u8 {
+    var type_name = @typeName(T);
+    var last_dot: ?usize = null;
+    inline for (type_name, 0..) |c, i| {
+        if (c == '.') last_dot = i;
+    }
+    if (last_dot) |idx| return type_name[idx + 1 ..];
+    return type_name;
 }
 
 // ===== TESTS =====

@@ -22,6 +22,7 @@ const std = @import("std");
 
 const reflect = @import("reflect.zig");
 const change = @import("change.zig");
+const impl = @import("impl.zig");
 
 // Types
 pub const ReflectInfo = reflect.ReflectInfo;
@@ -31,6 +32,9 @@ pub const FuncInfo = reflect.FuncInfo;
 pub const ShallowTypeInfo = reflect.ShallowTypeInfo;
 
 pub const Change = change.Change;
+
+/// A utility to verify that a type implements a given interface (or trait in a way).
+pub const Implements = impl.Implements;
 
 // Funcs
 pub const getTypeInfo = reflect.getTypeInfo;
@@ -44,6 +48,7 @@ pub const verifyFuncWithArgs = reflect.verifyFuncWithArgs;
 pub const hasStruct = reflect.hasStruct;
 pub const hash = reflect.hash;
 pub const typeHash = reflect.typeHash;
+pub const getSimpleTypeName = reflect.getSimpleTypeName;
 
 test {
     std.testing.refAllDeclsRecursive(@This());
