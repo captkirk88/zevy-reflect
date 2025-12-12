@@ -24,6 +24,11 @@ const reflect = @import("reflect.zig");
 const change = @import("change.zig");
 const impl = @import("impl.zig");
 
+// Code generation utilities
+pub const codegen = struct {
+    pub const mixin_generator = @import("codegen/mixin_generator.zig");
+};
+
 // Types
 pub const ReflectInfo = reflect.ReflectInfo;
 pub const TypeInfo = reflect.TypeInfo;
@@ -33,7 +38,7 @@ pub const ShallowTypeInfo = reflect.ShallowTypeInfo;
 
 pub const Change = change.Change;
 
-/// A utility to verify that a type implements a given interface (or trait in a way).
+/// A utility to verify that a type implements a given interface.
 pub const Implements = impl.Implements;
 
 // Funcs

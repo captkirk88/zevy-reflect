@@ -2,3 +2,4 @@
 
 - [ ] Create ParamInfo for FuncInfo
     - ParamInfo would contain TypeInfo and be able to check if it is reference to self
+- [ ] Mixin code gen can have multiple mixins.

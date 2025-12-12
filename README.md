@@ -107,6 +107,10 @@ if (tracker.isChanged()) {
 }
 ```
 
+### Mixins (Experimental!)
+
+See [Mixin Codegen](MIXIN_CODEGEN.md)
+
 ## API Reference
 
 ### Reflection

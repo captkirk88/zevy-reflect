@@ -16,8 +16,8 @@ const reflect = @import("reflect.zig");
 ///     pub fn draw(self: *@This()) void { ... }
 /// };
 ///
-/// pub fn drawAll(comptime DrawType: Implements(Drawable), drawable: anytype) void {
-///     DrawType.satisfies(drawable); // if not satisfied then compile error will be shown
+/// pub fn drawAll(drawable: anytype) void {
+///     Implements(Drawable).validate(drawable); // if not satisfied then compile error will be shown
 /// }
 /// ```
 ///
@@ -27,17 +27,17 @@ pub fn Implements(comptime Template: type) type {
         const Template_ = Template;
 
         /// Validates that a type satisfies this interface.
-        pub fn satisfies(value: anytype) void {
-            const Implementation = @TypeOf(value);
+        pub fn validate(value: type) void {
+            const Implementation = value;
 
             // TODO TypeInfo needs a utility method isPointer(), isOptional(), etc.
             switch (@typeInfo(Implementation)) {
                 .pointer => {
-                    satisfies(value.*);
+                    validate(value.*);
                     return;
                 },
                 .optional => {
-                    if (value != null) satisfies(value.?);
+                    if (value != null) validate(value.?);
                     return;
                 },
                 else => {},
@@ -51,43 +51,7 @@ pub fn Implements(comptime Template: type) type {
                 var missing_methods: []const []const u8 = &.{};
 
                 for (func_names) |method_name| {
-                    var tmpl_func_info = template_info.getFunc(method_name).?;
-
-                    // Check if first param is a self reference and replace it with Implementation type
-                    if (tmpl_func_info.params.len > 0) {
-                        const first_param = tmpl_func_info.params[0];
-                        var is_self = false;
-
-                        if (first_param == .type) {
-                            const param_type = first_param.type.type;
-                            if (param_type == Template_) {
-                                is_self = true;
-                            } else if (@typeInfo(param_type) == .pointer) {
-                                const child = @typeInfo(param_type).pointer.child;
-                                if (child == Template_) {
-                                    is_self = true;
-                                }
-                            }
-                        }
-
-                        if (is_self) {
-                            // Build new params array with first param replaced
-                            var new_params: [tmpl_func_info.params.len]reflect.ReflectInfo = undefined;
-                            new_params[0] = .{ .type = impl_info };
-                            for (tmpl_func_info.params[1..], 1..) |param, i| {
-                                new_params[i] = param;
-                            }
-
-                            // Create new FuncInfo with modified params
-                            tmpl_func_info = .{
-                                .hash = tmpl_func_info.hash,
-                                .name = tmpl_func_info.name,
-                                .params = &new_params,
-                                .return_type = tmpl_func_info.return_type,
-                            };
-                        }
-                    }
-
+                    const tmpl_func_info = template_info.getFunc(method_name).?;
                     const impl_func_info = impl_info.getFunc(method_name);
 
                     if (impl_func_info == null) {
@@ -178,8 +142,7 @@ test "Implements - basic validation" {
     };
 
     const DrawableImpl = Implements(Drawable);
-    const circle = MyCircle{ .radius = 32 };
-    DrawableImpl.satisfies(circle);
+    DrawableImpl.validate(MyCircle);
 }
 
 test "Implements - missing required method fails compilation" {
@@ -200,7 +163,7 @@ test "Implements - missing required method fails compilation" {
     // const DrawableImpl = Implements(Drawable);
 
     // const badShape = BadShape{};
-    // DrawableImpl.check(badShape);
+    // DrawableImpl.validate(badShape);
 }
 
 test "Implements - reusable validator" {
@@ -223,8 +186,6 @@ test "Implements - reusable validator" {
     };
 
     const LoggerImpl = Implements(Logger);
-    var Simple = SimpleLogger{};
-    var Detailed = DetailedLogger{};
-    LoggerImpl.satisfies(&Simple);
-    LoggerImpl.satisfies(&Detailed);
+    LoggerImpl.validate(SimpleLogger);
+    LoggerImpl.validate(DetailedLogger);
 }

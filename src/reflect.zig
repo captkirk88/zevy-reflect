@@ -118,7 +118,8 @@ pub const FuncInfo = struct {
         }
         inline for (getDecls(ti)) |decl| {
             if (std.mem.eql(u8, decl.name, func_name)) {
-                const fn_type_info = @typeInfo(@TypeOf(@field(type_info.type, decl.name)));
+                const DeclType = @TypeOf(@field(type_info.type, decl.name));
+                const fn_type_info = @typeInfo(DeclType);
                 if (fn_type_info != .@"fn") {
                     @compileError(std.fmt.comptimePrint(
                         "Declared member '{s}'' is not a function of type '{s}'",
@@ -502,31 +503,27 @@ fn toReflectInfo(comptime T: type, comptime visited: []const ReflectInfo) ?Refle
 
     switch (type_info) {
         .pointer => |info| {
-            const Child = info.child;
-            // Handle pointer to opaque (like *anyopaque)
-            if (@typeInfo(Child) == .@"opaque") {
+            // Only skip opaque pointers like *anyopaque
+            if (@typeInfo(info.child) == .@"opaque") {
                 return null;
             }
-            return toReflectInfo(Child, visited);
+            // Create TypeInfo for the pointer/slice type itself, not the child
+            return ReflectInfo{ .type = TypeInfo.from(T) };
         },
         .@"opaque" => {
             return null;
         },
-        .optional => |info| {
-            const Child = info.child;
-            return toReflectInfo(Child, visited);
+        .optional => {
+            // Create TypeInfo for the optional type itself, not the child
+            return ReflectInfo{ .type = TypeInfo.from(T) };
         },
-        .array, .vector => |info| {
-            const Child = switch (info) {
-                .array => info.child,
-                .vector => info.child,
-                else => void,
-            };
-            return toReflectInfo(Child, visited);
+        .array, .vector => {
+            // Create TypeInfo for the array/vector type itself, not the child
+            return ReflectInfo{ .type = TypeInfo.from(T) };
         },
-        .error_union => |info| {
-            const Child = info.error_set;
-            return toReflectInfo(Child, visited);
+        .error_union => {
+            // Create TypeInfo for the error union type itself, not the child
+            return ReflectInfo{ .type = TypeInfo.from(T) };
         },
         .error_set => {
             var ri = ReflectInfo{ .type = TypeInfo{
@@ -1338,4 +1335,71 @@ test "reflect - ReflectInfo.field variant eql" {
 
     try std.testing.expect(comptime ri_field1.eql(&ri_field2));
     try std.testing.expect(comptime !ri_field1.eql(&ri_field_other));
+}
+
+test "reflect - fromMethod slice parameter type" {
+    const TestStruct = struct {
+        pub fn testMethod(self: *@This(), message: []const u8) void {
+            _ = self;
+            _ = message;
+        }
+    };
+
+    // First check what Zig gives us directly
+    const DirectFnType = @TypeOf(TestStruct.testMethod);
+    const direct_fn_info = @typeInfo(DirectFnType);
+    std.debug.print("\nDirect @typeInfo check:\n", .{});
+    inline for (direct_fn_info.@"fn".params, 0..) |param, i| {
+        if (param.type) |pt| {
+            std.debug.print("  Param {d}: {s}\n", .{ i, @typeName(pt) });
+        }
+    }
+
+    // Now check via fromMethod
+    const type_info = comptime TypeInfo.from(TestStruct);
+    const func_info = type_info.getFunc("testMethod").?;
+
+    std.debug.print("\nfromMethod result:\n", .{});
+    std.debug.print("Function: {s}\n", .{func_info.name});
+    std.debug.print("Params: {d}\n", .{func_info.params.len});
+
+    inline for (func_info.params, 0..) |param, i| {
+        switch (param) {
+            .type => |ti| {
+                std.debug.print("  Param {d}: {s}\n", .{ i, @typeName(ti.type) });
+            },
+            else => {
+                std.debug.print("  Param {d}: not a type\n", .{i});
+            },
+        }
+    }
+
+    // Check that param 1 is []const u8, not u8
+    switch (func_info.params[1]) {
+        .type => |ti| {
+            try std.testing.expectEqual([]const u8, ti.type);
+        },
+        else => {
+            try std.testing.expect(false); // Should be a type
+        },
+    }
+}
+
+test "reflect - getFunc finds method" {
+    const TestStruct = struct {
+        pub fn draw(self: *@This()) void {
+            _ = self;
+        }
+    };
+
+    const type_info = comptime TypeInfo.from(TestStruct);
+    const func_info = type_info.getFunc("draw");
+
+    std.debug.print("\ngetFunc result for 'draw': {}\n", .{func_info != null});
+    if (func_info) |fi| {
+        std.debug.print("  Function name: {s}\n", .{fi.name});
+        std.debug.print("  Params: {d}\n", .{fi.params.len});
+    }
+
+    try std.testing.expect(func_info != null);
 }
