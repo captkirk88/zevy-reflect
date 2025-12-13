@@ -4,7 +4,7 @@ const std = @import("std");
 pub inline fn typeHash(comptime T: type) u64 {
     const name = @typeName(T);
     const len = name.len;
-    
+
     // Sample up to 8 characters from different positions for uniqueness
     var h: u64 = len;
     if (len > 0) h ^= @as(u64, name[0]) << 0;
@@ -15,7 +15,7 @@ pub inline fn typeHash(comptime T: type) u64 {
     if (len > 8) h ^= @as(u64, name[len / 8]) << 40;
     if (len > 16) h ^= @as(u64, name[len - len / 16]) << 48;
     if (len > 32) h ^= @as(u64, name[len - len / 32]) << 56;
-    
+
     return h;
 }
 
@@ -41,6 +41,11 @@ pub const ShallowTypeInfo = struct {
             .size = safeSizeOf(T),
         };
     }
+
+    pub fn isPointer(self: *const @This()) bool {
+        return @typeInfo(self.type) == .pointer;
+    }
+
     /// Get full TypeInfo for this type (computed lazily)
     pub fn getFullInfo(self: *const ShallowTypeInfo) TypeInfo {
         return comptime TypeInfo.from(self.type);
@@ -87,21 +92,22 @@ pub const FieldInfo = struct {
         switch (container_info.*) {
             .type => |ti| {
                 if (ti.getField(field_name)) |f| {
-                    f.container_info = ti;
+                    f.container_type = ti;
                     return f;
-                } else {
-                    return null;
-                }
-            },
-            .field => |fii| {
-                if (std.mem.eql(u8, fii.name, field_name) and fii.container_type == container_info.type) {
-                    return fii;
                 } else {
                     return null;
                 }
             },
             else => return null,
         }
+    }
+
+    pub fn get(self: *const FieldInfo) self.type.type {
+        return @as(self.type.type, @field(self.container_type.type, self.name));
+    }
+
+    pub fn set(self: *const FieldInfo, value: self.type) void {
+        @field(self.container_type.type, self.name) = value;
     }
 
     /// Check if this FieldInfo is equal to another
@@ -114,6 +120,7 @@ pub const FieldInfo = struct {
 
 pub const ParamInfo = struct {
     info: ReflectInfo,
+    /// Whether this parameter is marked `noalias`
     is_noalias: bool = false,
     is_comptime: bool = false,
 
@@ -215,7 +222,6 @@ pub const FuncInfo = struct {
             const ParamType = switch (param.info) {
                 .type => |ti| ti.type,
                 .func => |fi| fi.type.type,
-                .field => |_| @compileError("FuncInfo.invoke does not support field parameter types"),
             };
 
             typed_args[i] = @as(ParamType, args[i]);
@@ -254,11 +260,18 @@ pub const FuncInfo = struct {
     ///
     /// *Does not need to be called at comptime.*
     pub inline fn toString(self: *const FuncInfo) []const u8 {
-        return comptime self.getStringRepresentation(false);
+        return comptime self.getStringRepresentation(false, true);
     }
 
-    pub inline fn toStringOmitSelf(self: *const FuncInfo) []const u8 {
-        return comptime self.getStringRepresentation(true);
+    /// Get a string representation of the function signature
+    ///
+    /// `omit_self`: If true, omits the first parameter (commonly `self` in methods).
+    ///
+    /// `simple_names`: If true, uses simple type names without module paths.
+    ///
+    /// *Does not need to be called at comptime.*
+    pub inline fn toStringEx(self: *const FuncInfo, omit_self: bool, simple_names: bool) []const u8 {
+        return comptime self.getStringRepresentation(omit_self, simple_names);
     }
 
     /// Check if this FuncInfo is equal to another
@@ -277,13 +290,13 @@ pub const FuncInfo = struct {
         return true;
     }
 
-    fn getStringRepresentation(self: *const FuncInfo, omit_self: bool) []const u8 {
+    fn getStringRepresentation(self: *const FuncInfo, omit_self: bool, simple_names: bool) []const u8 {
         var prefix_str: []const u8 = "";
         var params_str: []const u8 = "";
 
         if (self.container_type) |ct| {
             // Prefix self container type
-            prefix_str = std.fmt.comptimePrint("{s}.", .{getSimpleTypeName(ct.type)});
+            prefix_str = std.fmt.comptimePrint("{s}.", .{if (simple_names) getSimpleTypeName(ct.type) else ct.name});
         }
         //
         prefix_str = prefix_str ++ self.name;
@@ -294,19 +307,25 @@ pub const FuncInfo = struct {
             if (omit_self and i == 0) continue;
             switch (param.info) {
                 .type => |ti| {
-                    if (first) params_str = ti.name else params_str = std.fmt.comptimePrint("{s}, {s}", .{ params_str, ti.name });
+                    if (first) {
+                        params_str = if (simple_names) simplifyTypeName(ti.name) else ti.name;
+                    } else {
+                        params_str = std.fmt.comptimePrint("{s}, {s}", .{ params_str, if (simple_names) simplifyTypeName(ti.name) else ti.name });
+                    }
                 },
                 .func => |fi| {
-                    if (first) params_str = fi.name else params_str = std.fmt.comptimePrint("{s}, {s}", .{ params_str, fi.name });
+                    if (first) {
+                        params_str = if (simple_names) simplifyTypeName(fi.name) else fi.name;
+                    } else {
+                        params_str = std.fmt.comptimePrint("{s}, {s}", .{ params_str, if (simple_names) simplifyTypeName(fi.name) else fi.name });
+                    }
                 },
-                .field => |_| {},
             }
             first = false;
         }
         const return_str = if (self.return_type) |ret| switch (ret) {
-            .type => |ti| ti.name,
-            .func => |fi| fi.name,
-            .field => |_| "void",
+            .type => |ti| simplifyTypeName(ti.name),
+            .func => |fi| simplifyTypeName(fi.name),
         } else "void";
 
         return std.fmt.comptimePrint("fn {s}({s}) -> {s}", .{ prefix_str, params_str, return_str });
@@ -476,7 +495,7 @@ pub const TypeInfo = struct {
                 }
             }
 
-            var result: T = T{};
+            var result: T = std.mem.zeroInit(T, .{});
 
             // Apply only the provided tuple fields to avoid referencing absent fields on args.
             inline for (tuple_fields) |tf| {
@@ -592,27 +611,46 @@ pub const TypeInfo = struct {
         return true;
     }
 
+    /// Check if this TypeInfo represents a pointer type
     pub inline fn isPointer(self: *const TypeInfo) bool {
         return self.is_pointer;
     }
 
+    /// Check if this TypeInfo represents a array or vector type
     pub inline fn isSlice(self: *const TypeInfo) bool {
         return self.is_slice;
+    }
+
+    /// Get a shallow version of this TypeInfo (no field details)
+    pub inline fn toShallow(self: *const TypeInfo) ShallowTypeInfo {
+        return ShallowTypeInfo{
+            .type = self.type,
+            .name = self.name,
+            .size = self.size,
+        };
     }
 
     /// Get a string representation of the type info
     ///
     /// *Does not need to be called at comptime.*
     pub inline fn toString(self: *const TypeInfo) []const u8 {
-        return comptime self.getStringRepresentation();
+        return comptime self.getStringRepresentation(false);
     }
 
-    fn getStringRepresentation(self: *const TypeInfo) []const u8 {
-        return std.fmt.comptimePrint("TypeInfo{{ name {s}, size: {d}, hash: {x}, type: {s}}}", .{
-            self.name,
+    /// Get a string representation of the type info
+    ///
+    /// `simple_name`: If true, uses simple type names without module paths.
+    ///
+    /// *Does not need to be called at comptime.*
+    pub inline fn toStringEx(self: *const TypeInfo, simple_name: bool) []const u8 {
+        return comptime self.getStringRepresentation(simple_name);
+    }
+
+    fn getStringRepresentation(self: *const TypeInfo, simple_name: bool) []const u8 {
+        return std.fmt.comptimePrint("TypeInfo{{ name {s}, size: {d}, hash: {x}}}", .{
+            if (simple_name) simplifyTypeName(self.name) else self.name,
             self.size,
             self.hash,
-            @typeName(self.type),
         });
     }
 
@@ -662,7 +700,6 @@ pub const TypeInfo = struct {
 pub const ReflectInfo = union(enum) {
     type: TypeInfo,
     func: FuncInfo,
-    field: FieldInfo,
 
     pub const unknown = ReflectInfo{ .type = TypeInfo{
         .hash = 0,
@@ -679,6 +716,20 @@ pub const ReflectInfo = union(enum) {
         return toReflectInfo(T, &[_]ReflectInfo{});
     }
 
+    pub fn getTypeInfo(self: *const ReflectInfo) ?TypeInfo {
+        switch (self.*) {
+            .type => |ti| return ti,
+            else => return null,
+        }
+    }
+
+    pub fn getFuncInfo(self: *const ReflectInfo) ?FuncInfo {
+        switch (self.*) {
+            .func => |fi| return fi,
+            else => return null,
+        }
+    }
+
     /// Check if this ReflectInfo is equal to another
     ///
     /// *Must be called at comptime.*
@@ -693,12 +744,6 @@ pub const ReflectInfo = union(enum) {
             .func => |fi| {
                 switch (other.*) {
                     .func => |fi2| return fi.eql(&fi2),
-                    else => return false,
-                }
-            },
-            .field => |fii| {
-                switch (other.*) {
-                    .field => |fii2| return fii.eql(&fii2),
                     else => return false,
                 }
             },
@@ -723,9 +768,6 @@ fn toReflectInfo(comptime T: type, comptime visited: []const ReflectInfo) ?Refle
             .func => |fi| {
                 // For functions, compare names since we don't have direct type
                 if (std.mem.eql(u8, fi.name, @typeName(T))) return info;
-            },
-            .field => |fii| {
-                if (fii.type.type) return info;
             },
         }
     }
@@ -892,15 +934,15 @@ fn lazyGetFunc(comptime T: type, comptime func_name: []const u8) ?FuncInfo {
         return null;
     }
 
-    const DeclType = @TypeOf(@field(T, func_name));
-    const decl_type_info = @typeInfo(DeclType);
+    const FuncType = @TypeOf(@field(T, func_name));
+    const func_type_info = @typeInfo(FuncType);
 
-    if (decl_type_info != .@"fn") {
+    if (func_type_info != .@"fn") {
         return null;
     }
 
     // Check for unsupported parameter types
-    inline for (decl_type_info.@"fn".params) |param| {
+    inline for (func_type_info.@"fn".params) |param| {
         if (param.type) |pt| {
             const pt_info = @typeInfo(pt);
             if (pt_info == .@"opaque") {
@@ -916,10 +958,10 @@ fn lazyGetFunc(comptime T: type, comptime func_name: []const u8) ?FuncInfo {
     }
 
     // Build FuncInfo for this specific function
-    var param_infos: [decl_type_info.@"fn".params.len]ParamInfo = undefined;
+    var param_infos: [func_type_info.@"fn".params.len]ParamInfo = undefined;
     var valid_params: usize = 0;
 
-    inline for (decl_type_info.@"fn".params) |param| {
+    inline for (func_type_info.@"fn".params) |param| {
         const param_type = param.type.?;
         if (comptime toReflectInfo(param_type, &[_]ReflectInfo{})) |info| {
             param_infos[valid_params] = ParamInfo{
@@ -932,19 +974,21 @@ fn lazyGetFunc(comptime T: type, comptime func_name: []const u8) ?FuncInfo {
         }
     }
 
-    const return_type_info = if (decl_type_info.@"fn".return_type) |ret_type|
+    const return_type_info = if (func_type_info.@"fn".return_type) |ret_type|
         comptime toReflectInfo(ret_type, &[_]ReflectInfo{})
     else
         null;
 
-    return FuncInfo{
-        .hash = typeHash(DeclType),
+    const func_info = FuncInfo{
+        .hash = typeHash(FuncType),
         .name = func_name,
         .params = param_infos[0..valid_params],
         .return_type = return_type_info,
         .container_type = ShallowTypeInfo.from(T),
-        .type = ShallowTypeInfo.from(DeclType),
+        .type = ShallowTypeInfo.from(FuncType),
     };
+
+    return func_info;
 }
 
 /// Get full TypeInfo for a type
@@ -1147,13 +1191,51 @@ pub fn getFields(comptime T: type) []const []const u8 {
 
 /// Get the simple type name (without namespace/module prefixes)
 pub fn getSimpleTypeName(comptime T: type) []const u8 {
-    var type_name = @typeName(T);
+    return simplifyTypeName(@typeName(T));
+}
+
+fn simplifyTypeName(comptime type_name: []const u8) []const u8 {
     var last_dot: ?usize = null;
     inline for (type_name, 0..) |c, i| {
         if (c == '.') last_dot = i;
     }
-    if (last_dot) |idx| return type_name[idx + 1 ..];
-    return type_name;
+
+    // If there's no dot, just return the original name.
+    if (last_dot == null) return type_name;
+
+    // Preserve leading pointer qualifiers like '*' or '*const ' when stripping module prefixes.
+    // Example: "*const pkg.Module.Type" -> "*const Type"
+    var prefix_end: usize = 0;
+    if (type_name.len > 0 and type_name[0] == '*') {
+        var i: usize = 1;
+        while (i < type_name.len and type_name[i] == ' ') : (i += 1) {}
+        // match "const" if present
+        if (i + 5 <= type_name.len and std.mem.eql(u8, type_name[i .. i + 5], "const")) {
+            i += 5;
+            if (i < type_name.len and type_name[i] == ' ') i += 1;
+        }
+        prefix_end = i;
+    }
+
+    const idx = last_dot.?;
+    if (prefix_end == 0) return type_name[idx + 1 ..];
+
+    // Build a new compile-time array combining the prefix and the simple name.
+    comptime {
+        const name_part = type_name[idx + 1 ..];
+        const out_len = prefix_end + name_part.len;
+        var out: [out_len]u8 = undefined;
+        var pos: usize = 0;
+        for (type_name[0..prefix_end]) |c| {
+            out[pos] = c;
+            pos += 1;
+        }
+        for (name_part) |c| {
+            out[pos] = c;
+            pos += 1;
+        }
+        return out[0..out_len];
+    }
 }
 
 // ===== TESTS =====
@@ -1591,18 +1673,6 @@ test "reflect - PackedStruct vs UnpackedStruct" {
     try std.testing.expect(ti.fields[1].offset != uti.fields[1].offset);
 }
 
-test "reflect - ReflectInfo.field variant eql" {
-    const S = struct { a: u32, b: i32 };
-    const T = struct { x: u32, y: i32 };
-
-    const ri_field1 = comptime ReflectInfo{ .field = TypeInfo.from(S).fields[0] };
-    const ri_field2 = comptime ReflectInfo{ .field = TypeInfo.from(S).fields[0] };
-    const ri_field_other = comptime ReflectInfo{ .field = TypeInfo.from(T).fields[0] };
-
-    try std.testing.expect(comptime ri_field1.eql(&ri_field2));
-    try std.testing.expect(comptime !ri_field1.eql(&ri_field_other));
-}
-
 test "reflect - fromMethod slice parameter type" {
     const TestStruct = struct {
         pub fn testMethod(self: *@This(), message: []const u8) void {
@@ -1706,14 +1776,14 @@ test "FuncInfo.toPtr" {
 
 test "TypeInfo.new constructs value" {
     const Foo = struct {
-        a: i32 = 1,
+        a: i32,
         b: i32 = 2,
     };
 
     const ti = comptime TypeInfo.from(Foo);
 
     const foo_default = ti.new(.{});
-    try std.testing.expectEqual(@as(i32, 1), foo_default.a);
+    try std.testing.expectEqual(@as(i32, 0), foo_default.a);
     try std.testing.expectEqual(@as(i32, 2), foo_default.b);
 
     const foo_override = ti.new(.{ .a = 5 });
