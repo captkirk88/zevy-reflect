@@ -650,7 +650,6 @@ test "Interfaces composition" {
 
     const GameObjectImpl = Interfaces(&[_]type{ Drawable, Updatable, Destroyable });
 
-    comptime @setEvalBranchQuota(2000);
     const vt = GameObjectImpl.vTable(GameObject);
 
     var obj = GameObject{};

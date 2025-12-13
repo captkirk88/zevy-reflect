@@ -830,9 +830,9 @@ pub const ReflectInfo = union(enum) {
 };
 
 fn toReflectInfo(comptime T: type) ?ReflectInfo {
-    @setEvalBranchQuota(5000);
     if (lookupVisited(T)) |cached| return cached;
 
+    @setEvalBranchQuota(3000);
     const type_info = @typeInfo(T);
 
     switch (type_info) {
