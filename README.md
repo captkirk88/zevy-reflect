@@ -31,209 +31,134 @@ exe.root_module.addImport("zevy_reflect", zevy_reflect.module("zevy_reflect"));
 
 ### Reflection
 
+This library provides both lightweight (shallow) runtime `TypeInfo` and a small set of helpers to query type structure without blowing up comptime.
+
 ```zig
 const reflect = @import("zevy_reflect");
+const std = @import("std");
 
 const MyStruct = struct {
     id: u32,
     name: []const u8,
     active: bool,
 
-    pub fn getId(self: @This()) u32 {
-        return self.id;
-    }
+    pub fn getId(self: @This()) u32 { return self.id; }
 };
 
-// Get type information
-const type_info = reflect.getTypeInfo(MyStruct);
-std.debug.print("Type: {s}, Size: {}\n", .{ type_info.name, type_info.size });
+comptime {
+    const info = reflect.getTypeInfo(MyStruct);
+    std.debug.print("Name: {s}, Size: {d}\n", .{ info.name, info.size });
 
-// Check for fields and functions
-if (reflect.hasField(MyStruct, "name")) {
-    std.debug.print("Has 'name' field\n", .{});
+    // Field checks (comptime-safe helpers):
+    try std.testing.expect(comptime reflect.hasField(MyStruct, "id"));
+    try std.testing.expect(comptime reflect.hasFunc(MyStruct, "getId"));
+
+    // List field names at comptime
+    const fields = reflect.getFields(MyStruct);
+    inline for (fields) |f| std.debug.print("field: {s}\n", .{ f });
 }
 
-if (reflect.hasFunc(MyStruct, "getId")) {
-    std.debug.print("Has 'getId' method\n", .{});
+// Runtime: use TypeInfo to introspect dynamic metadata (shallow info avoids recursion)
+const ti = reflect.getTypeInfo(MyStruct);
+std.debug.print("Runtime fields: {d}\n", .{ ti.fields.len });
+
+// Construct a value using `TypeInfo.new` from a tuple literal (comptime API)
+comptime {
+    const ti_comp = reflect.getTypeInfo(MyStruct);
+    const instance_default = ti_comp.new(.{});
+    const instance_override = ti_comp.new(.{ .id = 10, .name = "bob" });
+    try std.testing.expectEqual(@as(u32, 10), instance_override.id);
 }
 ```
 
-### Implements Interface Validation
+Notes:
+- `getTypeInfo` returns shallow field and function metadata suitable for runtime use.
+- `TypeInfo.new` is a comptime helper that constructs values from tuple literals; useful for code generation and tests.
+
+### Implements (interface validator)
+
+`Interface(Template)` provides a compile-time validator and a typed vtable generator. Useful when you want an explicit interface and a vtable for dynamic dispatch.
 
 ```zig
 const reflect = @import("zevy_reflect");
+
 const Drawable = struct {
-    pub fn draw(_: *@This()) void {};
+    pub fn draw(self: *@This()) void {}
 };
 
-const Circle = struct {
-    radius: f32,
-    pub fn draw(_: *@This()) void {
-        // draw..
-    }
-}
+const Sprite = struct {
+    called: bool = false;
+    pub fn draw(self: *@This()) void { self.called = true; }
+};
 
-pub fn draw(comptime DrawableImpl: Implements(Drawable), drawable: anytype) {
-    DrawableImpl.satisfies(drawable); // If not satisfied, a nice compile error will occur.
+comptime {
+    const DImpl = reflect.Interface(Drawable);
+    // Validate at comptime (will produce compile error if missing methods)
+    DImpl.validate(Sprite);
+
+    // Build a vtable for Sprite and call through it
+    const Vt = DImpl.vTable(Sprite);
+    var s = Sprite{};
+    Vt.draw(&s);
+    try std.testing.expect(s.called);
 }
 ```
+
+Notes:
+- `validate` checks method names and signatures (including handling `self`), emitting clear compile-time errors when mismatched.
+- `vTable` returns a compile-time constructed struct of function pointers matching the template methods.
 
 ### Change Detection
 
+`Change(T)` is a tiny tracker that hashes trackable fields and detects modifications. Fields beginning with `_` are ignored.
+
 ```zig
 const reflect = @import("zevy_reflect");
+const std = @import("std");
 
 const Player = struct {
     health: i32,
     score: u32,
-    _internal_id: u64, // Ignored for change tracking
+    _internal_id: u64, // ignored by Change
 };
 
 var player = Player{ .health = 100, .score = 0, ._internal_id = 123 };
 var tracker = reflect.Change(Player).init(player);
 
-// Modify data
+// Mutate through `get()` (mutable) and finish when processed
 var data = tracker.get();
 data.health = 80;
 data.score = 100;
 
-// Changes automatically detected
 if (tracker.isChanged()) {
-    std.debug.print("Player data changed!\n", .{});
-    // Process changes...
-
-    // Mark as processed
+    std.debug.print("Player changed: {d}\n", .{ tracker.getConst().score });
     tracker.finish();
 }
 ```
 
-### Mixins (Experimental!)
+Caveats:
+- The tracker compares raw bytes for tracked fields; pointer/slice/array contents are hashed as their pointer/length/contents as appropriate. Be cautious with non-stable data (e.g., transient pointers).
 
-See [Mixin Codegen](MIXIN_CODEGEN.md)
+## API Reference (concise)
 
-## API Reference
-
-### Reflection
-
-#### Types
-- `TypeInfo`: Complete type information including fields, functions, and nested types
-- `FieldInfo`: Information about a specific field (name, offset, type)
-- `FuncInfo`: Information about a function (name, parameters, return type)
-- `ShallowTypeInfo`: Lightweight type info without recursion
-
-#### Functions
-- `getTypeInfo(comptime T: type) TypeInfo`: Get complete type information
-- `hasField(comptime T: type, field_name: []const u8) bool`: Check if type has a field
-- `hasFunc(comptime T: type, func_name: []const u8) bool`: Check if type has a function
-- `hasFuncWithArgs(comptime T: type, func_name: []const u8, arg_types: []const type) bool`: Check function signature
-- `getFieldType(comptime T: type, field_name: []const u8) ?type`: Get field type
-- `getFieldNames(comptime T: type) []const []const u8`: Get all field names
-
-### Change Detection
-
-#### `Change(T)` - Generic change tracker for struct type T
-
-- `init(data: T) Change(T)`: Create a change tracker with initial data
-- `get() *T`: Get mutable access to data (panics if unprocessed changes exist)
-- `getConst() *const T`: Get const access to data
-- `isChanged() bool`: Check if data has changed since last `finish()`
-- `finish()`: Mark changes as processed and update baseline
-
-#### Behavior
-- **Automatic Detection**: Uses hash-based comparison, no manual marking required
-- **Memory Efficient**: Only 8 bytes overhead per tracker
-- **Field Filtering**: Fields starting with `_` are ignored for change detection
-- **Type Safety**: Compile-time validation ensures T is a struct
+- `getTypeInfo(comptime T: type) TypeInfo` — shallow runtime `TypeInfo` with `fields` (shallow `FieldInfo`) and helpers for lazy decl/func access.
+- `hasField(comptime T: type, field_name: []const u8) bool` — comptime helper using the library's reflection; prefer this over direct `@hasField` when you rely on zevy-reflect behavior.
+- `getFields(comptime T: type) []const []const u8` — names of public fields (comptime).
+- `TypeInfo.new` — comptime-only convenience to construct simple values from tuple literals; intended for tests and code-generation scenarios.
+- `Change(T)` — small change-tracker type; call `init`, use `get`/`getConst`, `isChanged`, and `finish`.
 
 ## Examples
 
-### Advanced Reflection
-
-```zig
-const reflect = @import("zevy_reflect");
-
-const ComplexType = struct {
-    simple_field: i32,
-    array_field: [4]f32,
-    optional_field: ?[]const u8,
-    nested: struct {
-        inner_field: bool,
-    },
-
-    pub fn method(self: @This(), param: i32) []const u8 {
-        _ = self;
-        _ = param;
-        return "result";
-    }
-};
-
-const info = reflect.getTypeInfo(ComplexType);
-std.debug.print("Fields: {d}\n", .{info.fields.len});
-std.debug.print("Functions: {d}\n", .{info.functions.len});
-
-// Iterate through fields
-for (info.fields) |field| {
-    std.debug.print("Field: {s} ({s})\n", .{ field.name, field.type.name });
-}
-```
-
-### Change Tracking with Multiple Fields
-
-```zig
-const reflect = @import("zevy_reflect");
-
-const Config = struct {
-    volume: f32,
-    fullscreen: bool,
-    resolution: struct { width: u32, height: u32 },
-    _last_modified: u64, // Ignored for change tracking
-};
-
-var config = Config{
-    .volume = 0.8,
-    .fullscreen = false,
-    .resolution = .{ .width = 1920, .height = 1080 },
-    ._last_modified = 0,
-};
-
-var tracker = reflect.Change(Config).init(config);
-
-// Simulate user changing settings
-{
-    var data = tracker.get();
-    data.volume = 1.0;
-    data.fullscreen = true;
-}
-
-if (tracker.isChanged()) {
-    std.debug.print("Settings changed, saving...\n", .{});
-    // Save to disk...
-    tracker.finish();
-}
-```
-
-## Performance
-
-- **Reflection**: Compile-time heavy but zero runtime cost
-- **Change Detection**: O(n) where n is the size of tracked fields, using efficient Wyhash
-- **Memory**: 8 bytes per change tracker instance
-- **No Allocations**: All operations are allocation-free
-
-## Limitations
-
-- **Structs Only**: Change detection only works with struct types
-- **Hash Collisions**: Extremely unlikely but possible with Wyhash
-- **Pointer Fields**: Hash includes pointer values, not pointed-to data
-- **Compile Time**: Complex reflection can increase compile times
+See the `src` tests for many small, runnable examples demonstrating edge cases (opaque types, packed structs, functions with anyopaque params, etc.).
 
 ## Contributing
 
 1. Fork the repository
 2. Create a feature branch
-3. Add tests for new functionality
+3. Add tests for any new functionality
 4. Ensure all tests pass: `zig build test`
 5. Submit a pull request
 
 ## Related Projects
 
-- [zevy-ecs](https://github.com/captkirk88/zevy-ecs) - Entity Component System framework that uses zevy-reflect for serialization
+- [zevy-ecs](https://github.com/captkirk88/zevy-ecs) - Entity Component System framework that uses zevy-reflect.

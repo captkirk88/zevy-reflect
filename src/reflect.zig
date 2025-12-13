@@ -145,11 +145,11 @@ pub const FuncInfo = struct {
                 inline for (fn_type_info.@"fn".params) |param| {
                     const p_t = param.type orelse void;
                     const p_ti = comptime TypeInfo.from(p_t);
-                    param_infos[pi_i] = ReflectInfo{ .type = p_ti };
+                    param_infos[pi_i] = .{ .type = p_ti };
                     pi_i += 1;
                 }
 
-                const return_ref = if (fn_type_info.@"fn".return_type) |ret_type| ReflectInfo{ .type = comptime TypeInfo.from(ret_type) } else null;
+                const return_ref: ReflectInfo = .{ .type = comptime TypeInfo.from(fn_type_info.@"fn".return_type.?) };
 
                 return FuncInfo{
                     .hash = hash(std.fmt.comptimePrint(
@@ -180,7 +180,7 @@ pub const FuncInfo = struct {
 
     /// Invoke the function with the given arguments.
     ///
-    /// args: A tuple of values.
+    /// args: A tuple of arguments to pass to the function.
     pub inline fn invoke(comptime self: *const FuncInfo, args: anytype) InvokeReturnType(self) {
         const func = self.funcPointer();
         const ArgsType = @TypeOf(args);
@@ -397,12 +397,99 @@ pub const TypeInfo = struct {
     is_slice: bool = false,
     is_pointer: bool = false,
 
+    /// Create a new value of this type from a tuple literal (e.g. `new(.{})` or `new(.{ .a = 32 })`).
+    /// For structs, tuple fields are matched by name; omitted fields use their defaults.
+    /// For non-struct value types, pass a single element tuple with the target value.
+    /// Opaque/unsized, pointer, and function types are not supported.
+    pub inline fn new(comptime self: *const TypeInfo, args: anytype) self.type {
+        const T = self.type;
+
+        const zig_type_info = @typeInfo(T);
+        switch (zig_type_info) {
+            .@"opaque", .noreturn, .type, .enum_literal, .null, .undefined, .comptime_int, .comptime_float, .@"fn" => {
+                @compileError("TypeInfo.new cannot instantiate unsupported type: " ++ self.name);
+            },
+            .pointer => {
+                @compileError("TypeInfo.new cannot allocate pointer types; construct the pointee separately");
+            },
+            else => {},
+        }
+
+        if (self.size == 0) {
+            @compileError("TypeInfo.new cannot instantiate unsized type: " ++ self.name);
+        }
+
+        const args_info = @typeInfo(@TypeOf(args));
+        const tuple_fields = switch (args_info) {
+            .@"struct" => |s| blk: {
+                // Accept tuple literals and named anon structs when the target is a struct.
+                if (s.is_tuple) break :blk s.fields;
+                if (zig_type_info == .@"struct") break :blk s.fields;
+                @compileError("TypeInfo.new expects a tuple literal, e.g. .{...}");
+            },
+            else => @compileError("TypeInfo.new expects a tuple literal, e.g. .{...}"),
+        };
+
+        if (zig_type_info == .@"struct") {
+            const target_fields = if (self.fields.len != 0)
+                self.fields
+            else
+                comptime TypeInfo.buildFields(T, &[_]ReflectInfo{});
+
+            if (target_fields.len == 0) {
+                @compileError(std.fmt.comptimePrint(
+                    "TypeInfo.new: no reflected fields available for type {s}",
+                    .{self.name},
+                ));
+            }
+
+            // Validate provided fields are known on the target type using reflected metadata.
+            inline for (tuple_fields) |tf| {
+                var known = false;
+                inline for (target_fields) |field_info| {
+                    if (std.mem.eql(u8, field_info.name, tf.name)) {
+                        known = true;
+                        break;
+                    }
+                }
+
+                if (!known and @hasField(T, tf.name)) {
+                    known = true;
+                }
+
+                if (!known) {
+                    // Allow construction to proceed; unknown fields will simply be ignored.
+                    // This favors permissiveness when reflected metadata is unavailable for some nested cases.
+                }
+            }
+
+            var result: T = T{};
+
+            // Apply only the provided tuple fields to avoid referencing absent fields on args.
+            inline for (tuple_fields) |tf| {
+                inline for (target_fields) |field_info| {
+                    if (std.mem.eql(u8, field_info.name, tf.name)) {
+                        @field(result, field_info.name) = @as(field_info.type.type, @field(args, tf.name));
+                        break;
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        if (tuple_fields.len != 1) {
+            @compileError("TypeInfo.new for non-struct types expects a single argument tuple");
+        }
+
+        const single_name = tuple_fields[0].name;
+        return @as(T, @field(args, single_name));
+    }
+
     /// Create `TypeInfo` from any type. Opaque/unsized types use a size of 0.
     ///
-    /// *Must be called at comptime.*
-    ///
-    /// TODO handle opaque types better
-    fn from(comptime T: type) TypeInfo {
+    /// *Does not need to be called at comptime.*
+    pub fn from(comptime T: type) TypeInfo {
         return comptime toTypeInfo(T, &[_]ReflectInfo{});
     }
 
@@ -521,33 +608,32 @@ pub const TypeInfo = struct {
         if (type_info != .@"struct") {
             return &[_]FieldInfo{};
         }
-        const fields = blk: {
-            if (type_info == .@"struct") break :blk type_info.@"struct".fields;
-            if (type_info == .@"enum") break :blk type_info.@"enum".fields;
-            if (type_info == .@"union") break :blk type_info.@"union".fields;
-            @compileError("Type is not a struct, enum, or union");
-        };
+
+        const fields = type_info.@"struct".fields;
         var field_infos: [fields.len]FieldInfo = undefined;
         var field_count: usize = 0;
-        for (fields) |field| {
-            // Skip fields with opaque types
-            const field_type_info = @typeInfo(field.type);
-            if (field_type_info == .@"opaque") continue;
-            if (field_type_info == .pointer and @typeInfo(field_type_info.pointer.child) == .@"opaque") continue;
 
-            // Use shallow type info - doesn't recurse into nested types
+        for (fields) |field| {
+            const field_type_info = @typeInfo(field.type);
+            const is_opaque = field_type_info == .@"opaque";
+            const is_ptr_to_opaque = field_type_info == .pointer and @typeInfo(field_type_info.pointer.child) == .@"opaque";
+
+            const field_size = safeSizeOf(field.type);
+            const field_offset = if (is_opaque or is_ptr_to_opaque) 0 else @offsetOf(T, field.name);
+
             field_infos[field_count] = FieldInfo{
                 .name = field.name,
-                .offset = @offsetOf(T, field.name),
+                .offset = field_offset,
                 .type = ShallowTypeInfo{
                     .type = field.type,
                     .name = @typeName(field.type),
-                    .size = @sizeOf(field.type),
+                    .size = field_size,
                 },
                 .container_type = ShallowTypeInfo.from(T),
             };
             field_count += 1;
         }
+
         return @constCast(field_infos[0..field_count]);
     }
 };
@@ -981,28 +1067,33 @@ pub fn isField(comptime T: type, comptime field_name: []const u8) bool {
 }
 
 /// Check if a struct has a field with the given name
-pub fn hasField(comptime T: type, field_name: []const u8) bool {
-    const type_info = @typeInfo(T);
-    const fields = blk: {
-        if (type_info == .@"struct") break :blk type_info.@"struct".fields;
-        if (type_info == .@"enum") break :blk type_info.@"enum".fields;
-        if (type_info == .@"union") break :blk type_info.@"union".fields;
-        if (type_info == .pointer) {
-            const Child = type_info.pointer.child;
-            return hasField(Child, field_name);
-        }
-        if (type_info == .optional) {
-            const Child = type_info.optional.child;
-            return hasField(Child, field_name);
-        }
-        return false;
+pub fn hasField(comptime T: type, comptime field_name: []const u8) bool {
+    const info = @typeInfo(T);
+    return switch (info) {
+        .pointer => hasField(info.pointer.child, field_name),
+        .optional => hasField(info.optional.child, field_name),
+        .@"struct" => blk: {
+            const fields = comptime TypeInfo.buildFields(T, &[_]ReflectInfo{});
+            if (fields.len == 0) break :blk @hasField(T, field_name);
+            inline for (fields) |fi| {
+                if (std.mem.eql(u8, fi.name, field_name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .@"enum" => blk: {
+            inline for (info.@"enum".fields) |field| {
+                if (std.mem.eql(u8, field.name, field_name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .@"union" => blk: {
+            inline for (info.@"union".fields) |field| {
+                if (std.mem.eql(u8, field.name, field_name)) break :blk true;
+            }
+            break :blk false;
+        },
+        else => false,
     };
-    inline for (fields) |field| {
-        if (std.mem.eql(u8, field.name, field_name)) {
-            return true;
-        }
-    }
-    return false;
 }
 
 /// Get the type of a field by name if that field exists, otherwise `null`.
@@ -1016,8 +1107,8 @@ pub fn getField(comptime T: type, field_name: []const u8) ?type {
         .@"struct" => |info| break :blk info.fields,
         .@"enum" => |info| break :blk info.fields,
         .@"union" => |info| break :blk info.fields,
-        .pointer => |info| return getField(info.pointer.child),
-        .optional => |info| return getField(info.optional.child),
+        .pointer => |info| return getField(info.pointer.child, field_name),
+        .optional => |info| return getField(info.optional.child, field_name),
         else => break :blk &[_]std.builtin.Type.StructField{},
     };
     inline for (fields) |field| {
@@ -1590,4 +1681,21 @@ test "FuncInfo.toPtr" {
     const result = fn_ptr(6, 7);
     try std.testing.expectEqual(@as(i32, 42), result);
     std.debug.print("Function pointer call result: {d}\n", .{result});
+}
+
+test "TypeInfo.new constructs value" {
+    const Foo = struct {
+        a: i32 = 1,
+        b: i32 = 2,
+    };
+
+    const ti = comptime TypeInfo.from(Foo);
+
+    const foo_default = ti.new(.{});
+    try std.testing.expectEqual(@as(i32, 1), foo_default.a);
+    try std.testing.expectEqual(@as(i32, 2), foo_default.b);
+
+    const foo_override = ti.new(.{ .a = 5 });
+    try std.testing.expectEqual(@as(i32, 5), foo_override.a);
+    try std.testing.expectEqual(@as(i32, 2), foo_override.b);
 }

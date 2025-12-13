@@ -38,8 +38,7 @@ pub const ShallowTypeInfo = reflect.ShallowTypeInfo;
 
 pub const Change = change.Change;
 
-/// A utility to verify that a type implements a given interface.
-pub const Implements = impl.Implements;
+pub const Interface = impl.Interface;
 
 // Funcs
 pub const getTypeInfo = reflect.getTypeInfo;

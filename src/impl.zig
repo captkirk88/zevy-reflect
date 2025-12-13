@@ -22,7 +22,7 @@ const reflect = @import("reflect.zig");
 /// ```
 ///
 /// This continues the explicitness of Zig which should be a code guideline all follow in most cases.
-pub fn Implements(comptime Template: type) type {
+pub fn Interface(comptime Template: type) type {
     return struct {
         const Template_ = Template;
 
@@ -206,7 +206,7 @@ test "Implements - basic validation" {
         }
     };
 
-    const DrawableImpl = Implements(Drawable);
+    const DrawableImpl = Interface(Drawable);
     DrawableImpl.validate(MyCircle);
 }
 
@@ -225,7 +225,7 @@ test "Implements - missing required method fails compilation" {
     // };
 
     // // This should not compile - missing 'draw' method
-    // const DrawableImpl = Implements(Drawable);
+    // const DrawableImpl = Interface(Drawable);
 
     // const badShape = BadShape{};
     // DrawableImpl.validate(badShape);
@@ -250,7 +250,7 @@ test "Implements - reusable validator" {
         }
     };
 
-    const LoggerImpl = Implements(Logger);
+    const LoggerImpl = Interface(Logger);
     LoggerImpl.validate(SimpleLogger);
     LoggerImpl.validate(DetailedLogger);
 }
@@ -270,7 +270,7 @@ test "Implements.vTable builds vtable" {
         }
     };
 
-    const DrawableImpl = Implements(Drawable);
+    const DrawableImpl = Interface(Drawable);
     const vt = DrawableImpl.vTable(Sprite);
 
     var sprite = Sprite{};
