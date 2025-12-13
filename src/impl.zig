@@ -17,35 +17,34 @@ const reflect = @import("reflect.zig");
 /// };
 ///
 /// pub fn drawAll(drawable: anytype) void {
-///     Implements(Drawable).validate(drawable); // if not satisfied then compile error will be shown
+///     Interface(Drawable).validate(drawable); // if not satisfied then compile error will be shown
 /// }
 /// ```
 ///
 /// This continues the explicitness of Zig which should be a code guideline all follow in most cases.
 pub fn Interface(comptime Template: type) type {
     return struct {
-        const Template_ = Template;
+        pub const TemplateType = Template;
 
         /// Validates that a type satisfies this interface.
         pub fn validate(value: type) void {
             const Implementation = value;
 
-            // TODO TypeInfo needs a utility method isPointer(), isOptional(), etc.
-            switch (@typeInfo(Implementation)) {
-                .pointer => {
-                    validate(value.*);
-                    return;
-                },
-                .optional => {
-                    if (value != null) validate(value.?);
-                    return;
-                },
-                else => {},
-            }
+            // switch (@typeInfo(Implementation)) {
+            //     .pointer => {
+            //         validate(value.*);
+            //         return;
+            //     },
+            //     .optional => {
+            //         if (value != null) validate(value.?);
+            //         return;
+            //     },
+            //     else => {},
+            // }
 
             comptime {
-                const template_info = reflect.getTypeInfo(Template_);
-                const impl_info = reflect.getTypeInfo(Implementation);
+                const template_info = reflect.TypeInfo.from(TemplateType);
+                const impl_info = reflect.TypeInfo.from(Implementation);
                 const func_names = template_info.getFuncNames();
 
                 var missing_methods: []const []const u8 = &.{};
@@ -71,11 +70,11 @@ pub fn Interface(comptime Template: type) type {
                                 switch (tmpl_param.info) {
                                     .type => |ti| {
                                         const tmpl_type = ti.type;
-                                        if (tmpl_type == Template_) {
+                                        if (tmpl_type == Template) {
                                             is_tmpl_self = true;
                                         } else if (@typeInfo(tmpl_type) == .pointer) {
                                             const child = @typeInfo(tmpl_type).pointer.child;
-                                            if (child == Template_) {
+                                            if (child == Template) {
                                                 is_tmpl_self = true;
                                             }
                                         }
@@ -126,7 +125,7 @@ pub fn Interface(comptime Template: type) type {
                 }
 
                 if (missing_methods.len > 0) {
-                    var error_msg: []const u8 = "Implementation " ++ reflect.getSimpleTypeName(Implementation) ++ " does not satisfy interface " ++ reflect.getSimpleTypeName(Template_) ++ ". Missing methods:\n";
+                    var error_msg: []const u8 = "Implementation " ++ reflect.getSimpleTypeName(Implementation) ++ " does not satisfy interface " ++ reflect.getSimpleTypeName(Template) ++ ". Missing methods:\n";
                     for (missing_methods) |method| {
                         error_msg = error_msg ++ "  - " ++ method ++ "\n";
                     }
@@ -138,8 +137,8 @@ pub fn Interface(comptime Template: type) type {
         /// Get the struct type representing the vtable for a given implementation.
         /// The fields correspond to the template's method names and hold typed function pointers.
         fn VTableType(comptime Implementation: type) type {
-            const template_info = reflect.getTypeInfo(Template_);
-            const impl_info = reflect.getTypeInfo(Implementation);
+            const template_info = comptime reflect.getTypeInfo(TemplateType);
+            const impl_info = comptime reflect.getTypeInfo(Implementation);
             const func_names = template_info.getFuncNames();
 
             return comptime blk: {
@@ -174,7 +173,7 @@ pub fn Interface(comptime Template: type) type {
                 // Reuse validation to ensure the implementation matches the template contract.
                 validate(Implementation);
 
-                const template_info = reflect.getTypeInfo(Template_);
+                const template_info = reflect.getTypeInfo(TemplateType);
                 const impl_info = reflect.getTypeInfo(Implementation);
                 const func_names = template_info.getFuncNames();
 
@@ -190,9 +189,56 @@ pub fn Interface(comptime Template: type) type {
     };
 }
 
+pub fn Interfaces(comptime InterfaceTypes: []const type) type {
+    return struct {
+        /// Validates that a type satisfies all interfaces in this composition.
+        pub fn validate(value: type) void {
+            comptime {
+                for (InterfaceTypes) |InterfaceType| {
+                    Interface(InterfaceType).validate(value);
+                }
+            }
+        }
+
+        fn CombinedVTableType(comptime Implementation: type) type {
+            return comptime blk: {
+                validate(Implementation);
+                var all_fields: []const std.builtin.Type.StructField = &.{};
+                for (InterfaceTypes) |Intf| {
+                    const VT = Interface(Intf).VTableType(Implementation);
+                    const vt_info = @typeInfo(VT);
+                    all_fields = all_fields ++ vt_info.@"struct".fields;
+                }
+                break :blk @Type(.{ .@"struct" = .{
+                    .layout = .auto,
+                    .fields = all_fields,
+                    .decls = &.{},
+                    .is_tuple = false,
+                } });
+            };
+        }
+
+        /// Build and return a combined vtable instance for the implementation.
+        pub fn vTable(comptime Implementation: type) CombinedVTableType(Implementation) {
+            return comptime blk: {
+                validate(Implementation);
+                var table: CombinedVTableType(Implementation) = undefined;
+                for (InterfaceTypes) |Intf| {
+                    const vt = Interface(Intf).vTable(Implementation);
+                    const vt_info = @typeInfo(@TypeOf(vt));
+                    for (vt_info.@"struct".fields) |field| {
+                        @field(table, field.name) = @field(vt, field.name);
+                    }
+                }
+                break :blk table;
+            };
+        }
+    };
+}
+
 // ===== TESTS =====
 
-test "Implements - basic validation" {
+test "Interface - basic validation" {
     const Drawable = struct {
         pub fn draw(self: *@This()) void {
             _ = self;
@@ -210,7 +256,7 @@ test "Implements - basic validation" {
     DrawableImpl.validate(MyCircle);
 }
 
-test "Implements - missing required method fails compilation" {
+test "Interface - missing required method fails compilation" {
     // Uncomment this test to see compile error as expected:
     // const Drawable = struct {
     //     pub fn draw(self: *@This()) void {
@@ -231,7 +277,7 @@ test "Implements - missing required method fails compilation" {
     // DrawableImpl.validate(badShape);
 }
 
-test "Implements - reusable validator" {
+test "Interface - reusable validator" {
     const Logger = struct {
         pub fn log(self: *@This()) void {
             _ = self;
@@ -255,7 +301,7 @@ test "Implements - reusable validator" {
     LoggerImpl.validate(DetailedLogger);
 }
 
-test "Implements.vTable builds vtable" {
+test "Interface.vTable builds vtable" {
     const Drawable = struct {
         pub fn draw(self: *@This()) void {
             _ = self;
@@ -277,4 +323,42 @@ test "Implements.vTable builds vtable" {
     vt.draw(&sprite);
 
     try std.testing.expect(sprite.called);
+}
+
+test "Interfaces" {
+    const Drawable = struct {
+        pub fn draw(self: *@This()) void {
+            _ = self;
+        }
+    };
+
+    const Updatable = struct {
+        pub fn update(self: *@This(), delta: f32) void {
+            _ = self;
+            _ = delta;
+        }
+    };
+
+    const GameObject = struct {
+        drawn: bool = false,
+        updated: bool = false,
+
+        pub fn draw(self: *@This()) void {
+            self.drawn = true;
+        }
+
+        pub fn update(self: *@This(), delta: f32) void {
+            _ = delta;
+            self.updated = true;
+        }
+    };
+
+    const GameObjectImpl = Interfaces(&[_]type{ Drawable, Updatable });
+
+    const vt = GameObjectImpl.vTable(GameObject);
+
+    var obj = GameObject{};
+    vt.draw(&obj);
+    vt.update(&obj, 0.16);
+    try std.testing.expect(obj.updated);
 }

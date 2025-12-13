@@ -324,3 +324,29 @@ pub fn generateMixinToFile(
 
     std.debug.print("Generated mixin: {s}\n", .{output_path});
 }
+
+test "generate mixin code" {
+    const Base = struct {
+        pub fn greet(self: *@This()) void {
+            _ = self;
+        }
+    };
+
+    const Extension = struct {
+        pub fn farewell(self: *@This()) void {
+            _ = self;
+        }
+    };
+
+    const config = MixinConfig{
+        .type_name = "GreeterFareweller",
+        .base_type_name = "Base",
+        .extension_type_name = "Extension",
+        .base_import_path = "base.zig",
+        .extension_import_path = "extension.zig",
+        .conflict_strategy = .extension_wins,
+    };
+
+    const code = generateMixinCode(Base, Extension, config);
+    std.debug.print("Generated Mixin Code:\n{s}\n", .{code});
+}

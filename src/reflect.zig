@@ -1,7 +1,22 @@
 const std = @import("std");
 
+/// Simple comptime hash using length and character samples - no iteration required
 pub inline fn typeHash(comptime T: type) u64 {
-    return std.hash.Wyhash.hash(0, @typeName(T));
+    const name = @typeName(T);
+    const len = name.len;
+    
+    // Sample up to 8 characters from different positions for uniqueness
+    var h: u64 = len;
+    if (len > 0) h ^= @as(u64, name[0]) << 0;
+    if (len > 1) h ^= @as(u64, name[len - 1]) << 8;
+    if (len > 2) h ^= @as(u64, name[len / 2]) << 16;
+    if (len > 3) h ^= @as(u64, name[len / 3]) << 24;
+    if (len > 4) h ^= @as(u64, name[len / 4]) << 32;
+    if (len > 8) h ^= @as(u64, name[len / 8]) << 40;
+    if (len > 16) h ^= @as(u64, name[len - len / 16]) << 48;
+    if (len > 32) h ^= @as(u64, name[len - len / 32]) << 56;
+    
+    return h;
 }
 
 pub inline fn hash(data: []const u8) u64 {
@@ -487,7 +502,7 @@ pub const TypeInfo = struct {
     /// Create `TypeInfo` from any type. Opaque/unsized types use a size of 0.
     ///
     /// *Does not need to be called at comptime.*
-    pub fn from(comptime T: type) TypeInfo {
+    pub inline fn from(comptime T: type) TypeInfo {
         return comptime toTypeInfo(T, &[_]ReflectInfo{});
     }
 
@@ -575,6 +590,14 @@ pub const TypeInfo = struct {
             return comptime lazyGetFunc(self.type, decl_name) != null;
         }
         return true;
+    }
+
+    pub inline fn isPointer(self: *const TypeInfo) bool {
+        return self.is_pointer;
+    }
+
+    pub inline fn isSlice(self: *const TypeInfo) bool {
+        return self.is_slice;
     }
 
     /// Get a string representation of the type info

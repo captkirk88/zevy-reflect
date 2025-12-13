@@ -1,5 +1,7 @@
 ### What to do...
 
-- [ ] Create ParamInfo for FuncInfo
-    - ParamInfo would contain TypeInfo and be able to check if it is reference to self
-- [ ] Mixin code gen can have multiple mixins.
+- [x] Create ParamInfo for FuncInfo
+- [ ] (low) Mixin code gen can have multiple mixins.
+
+> [!NOTE]
+> low = Low Priority = It's not high on my to-do and if you want to improve it, feel free to submit a pull request.
