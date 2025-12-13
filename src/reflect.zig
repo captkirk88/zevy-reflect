@@ -290,6 +290,25 @@ pub const FuncInfo = struct {
         return true;
     }
 
+    fn formatReflectInfo(comptime info: ReflectInfo, comptime simple: bool) []const u8 {
+        switch (info) {
+            .type => |ti| return if (simple) simplifyTypeName(ti.name) else ti.name,
+            .func => |fi| return formatFuncSignature(fi, simple),
+        }
+    }
+
+    fn formatFuncSignature(comptime fi: FuncInfo, comptime simple: bool) []const u8 {
+        var params_str: []const u8 = "";
+        var first_param = true;
+        inline for (fi.params) |p| {
+            const p_str = formatReflectInfo(p.info, simple);
+            params_str = if (first_param) p_str else std.fmt.comptimePrint("{s}, {s}", .{ params_str, p_str });
+            first_param = false;
+        }
+        const ret_str = if (fi.return_type) |ret| formatReflectInfo(ret, simple) else "void";
+        return std.fmt.comptimePrint("fn ({s}) -> {s}", .{ params_str, ret_str });
+    }
+
     fn getStringRepresentation(self: *const FuncInfo, omit_self: bool, simple_names: bool) []const u8 {
         var prefix_str: []const u8 = "";
         var params_str: []const u8 = "";
@@ -314,19 +333,13 @@ pub const FuncInfo = struct {
                     }
                 },
                 .func => |fi| {
-                    if (first) {
-                        params_str = if (simple_names) simplifyTypeName(fi.name) else fi.name;
-                    } else {
-                        params_str = std.fmt.comptimePrint("{s}, {s}", .{ params_str, if (simple_names) simplifyTypeName(fi.name) else fi.name });
-                    }
+                    const fn_sig = formatFuncSignature(fi, simple_names);
+                    params_str = if (first) fn_sig else std.fmt.comptimePrint("{s}, {s}", .{ params_str, fn_sig });
                 },
             }
             first = false;
         }
-        const return_str = if (self.return_type) |ret| switch (ret) {
-            .type => |ti| simplifyTypeName(ti.name),
-            .func => |fi| simplifyTypeName(fi.name),
-        } else "void";
+        const return_str = if (self.return_type) |ret| formatReflectInfo(ret, true) else "void";
 
         return std.fmt.comptimePrint("fn {s}({s}) -> {s}", .{ prefix_str, params_str, return_str });
     }

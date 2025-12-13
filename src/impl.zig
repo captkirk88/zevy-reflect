@@ -88,21 +88,11 @@ pub fn Interface(comptime Template: type) type {
                                 }
                             },
                             .func => |fi| {
-                                // For function-type params, try to substitute container types referencing the Template
-                                // by using the Implementation's TypeInfo when appropriate.
-                                // If fi.type refers directly to the Template, replace with Implementation; otherwise use full info.
-                                const target = fi.type.type;
-                                if (target == Template) {
-                                    func_params[j] = reflect.ParamInfo{
-                                        .info = .{ .type = reflect.TypeInfo.from(Implementation) },
-                                        .is_comptime = func_params[j].is_comptime,
-                                    };
-                                } else {
-                                    func_params[j] = reflect.ParamInfo{
-                                        .info = .{ .type = fi.type.getFullInfo() },
-                                        .is_comptime = func_params[j].is_comptime,
-                                    };
-                                }
+                                // Substitute types within the function signature
+                                func_params[j] = reflect.ParamInfo{
+                                    .info = substituteType(.{ .func = fi }, Template, Implementation),
+                                    .is_comptime = func_params[j].is_comptime,
+                                };
                             },
                         }
                     }
@@ -126,6 +116,21 @@ pub fn Interface(comptime Template: type) type {
                         } else {
                             for (tmpl_func_info.params, 0..) |tmpl_param, i| {
                                 const impl_param = impl_func_info.?.params[i];
+                                var expected_param = tmpl_param;
+
+                                // If the template parameter itself is a function type, rewrite any
+                                // embedded references to the template type so we compare against
+                                // the implementation's signature (e.g. fn(*Template) -> void).
+                                switch (tmpl_param.info) {
+                                    .func => {
+                                        expected_param = reflect.ParamInfo{
+                                            .info = substituteType(tmpl_param.info, Template, Implementation),
+                                            .is_noalias = tmpl_param.is_noalias,
+                                            .is_comptime = tmpl_param.is_comptime,
+                                        };
+                                    },
+                                    else => {},
+                                }
 
                                 // Check if template param references the template type (self parameter)
                                 var is_tmpl_self = false;
@@ -187,7 +192,7 @@ pub fn Interface(comptime Template: type) type {
                                 }
 
                                 // Otherwise check if they're equal
-                                if (!impl_param.eql(&tmpl_param)) {
+                                if (!impl_param.eql(&expected_param)) {
                                     param_match = false;
                                     break;
                                 }
@@ -210,6 +215,71 @@ pub fn Interface(comptime Template: type) type {
                     @compileError(error_msg);
                 }
             }
+        }
+
+        /// Helper function to substitute Template with Implementation in ReflectInfo recursively
+        fn substituteType(comptime info: reflect.ReflectInfo, comptime template_type: type, comptime impl_type: type) reflect.ReflectInfo {
+            switch (info) {
+                .type => |ti| {
+                    const new_type = substituteTypeInType(ti.type, template_type, impl_type);
+                    return .{ .type = reflect.TypeInfo.from(new_type) };
+                },
+                .func => |fi| {
+                    const new_fn_type = substituteFunctionType(fi.type.type, template_type, impl_type);
+                    var new_params: [fi.params.len]reflect.ParamInfo = undefined;
+                    for (fi.params, 0..) |param, i| {
+                        new_params[i] = reflect.ParamInfo{
+                            .info = substituteType(param.info, template_type, impl_type),
+                            .is_noalias = param.is_noalias,
+                            .is_comptime = param.is_comptime,
+                        };
+                    }
+                    const new_return = if (fi.return_type) |ret| substituteType(ret, template_type, impl_type) else null;
+                    const new_fi = reflect.FuncInfo{
+                        .hash = fi.hash,
+                        .name = @typeName(new_fn_type),
+                        .params = &new_params,
+                        .return_type = new_return,
+                        .container_type = fi.container_type,
+                        .type = reflect.ShallowTypeInfo.from(new_fn_type),
+                    };
+                    return .{ .func = new_fi };
+                },
+            }
+        }
+
+        fn substituteTypeInType(comptime T: type, comptime template_type: type, comptime impl_type: type) type {
+            if (T == template_type) return impl_type;
+            if (@typeInfo(T) == .pointer) {
+                const p = @typeInfo(T).pointer;
+                const child = p.child;
+                if (child == template_type) {
+                    return if (p.is_const) *const impl_type else *impl_type;
+                }
+            }
+            return T;
+        }
+
+        fn substituteFunctionType(comptime FnType: type, comptime template_type: type, comptime impl_type: type) type {
+            const fn_info = @typeInfo(FnType).@"fn";
+            var new_params: [fn_info.params.len]std.builtin.Type.Fn.Param = undefined;
+            for (fn_info.params, 0..) |param, i| {
+                const param_type = param.type.?;
+                const new_param_type = substituteTypeInType(param_type, template_type, impl_type);
+                new_params[i] = .{
+                    .is_generic = param.is_generic,
+                    .is_noalias = param.is_noalias,
+                    .type = new_param_type,
+                };
+            }
+            const new_return_type = if (fn_info.return_type) |rt| substituteTypeInType(rt, template_type, impl_type) else null;
+            return @Type(.{ .@"fn" = .{
+                .calling_convention = fn_info.calling_convention,
+                .is_generic = fn_info.is_generic,
+                .is_var_args = fn_info.is_var_args,
+                .params = &new_params,
+                .return_type = new_return_type,
+            } });
         }
 
         /// Get the struct type representing the vtable for a given implementation.
@@ -661,4 +731,23 @@ test "Const-correct interfaces - mutable implementation allowed for const templa
 
     try std.testing.expectEqual(@as(u32, 456), result);
     try std.testing.expectEqual(@as(u32, 1), buf.read_count);
+}
+
+test "Interface - function pointer parameter substitution" {
+    const CallbackHolder = struct {
+        pub fn setCallback(self: *@This(), cb: fn (*@This()) void) void {
+            _ = self;
+            _ = cb;
+        }
+    };
+
+    const MyHolder = struct {
+        pub fn setCallback(self: *@This(), cb: fn (*@This()) void) void {
+            _ = self;
+            _ = cb;
+        }
+    };
+
+    const CallbackHolderImpl = Interface(CallbackHolder);
+    CallbackHolderImpl.validate(MyHolder);
 }
