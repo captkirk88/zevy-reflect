@@ -139,14 +139,6 @@ if (tracker.isChanged()) {
 Caveats:
 - The tracker compares raw bytes for tracked fields; pointer/slice/array contents are hashed as their pointer/length/contents as appropriate. Be cautious with non-stable data (e.g., transient pointers).
 
-## API Reference (concise)
-
-- `getTypeInfo(comptime T: type) TypeInfo` — shallow runtime `TypeInfo` with `fields` (shallow `FieldInfo`) and helpers for lazy decl/func access.
-- `hasField(comptime T: type, field_name: []const u8) bool` — comptime helper using the library's reflection; prefer this over direct `@hasField` when you rely on zevy-reflect behavior.
-- `getFields(comptime T: type) []const []const u8` — names of public fields (comptime).
-- `TypeInfo.new` — comptime-only convenience to construct simple values from tuple literals; intended for tests and code-generation scenarios.
-- `Change(T)` — small change-tracker type; call `init`, use `get`/`getConst`, `isChanged`, and `finish`.
-
 ## Examples
 
 See the `src` tests for many small, runnable examples demonstrating edge cases (opaque types, packed structs, functions with anyopaque params, etc.).
