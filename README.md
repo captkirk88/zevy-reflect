@@ -7,7 +7,9 @@ A lightweight reflection and change detection library for Zig.
 ## Features
 
 - **Runtime Type Information**: Get detailed type information at runtime including fields, functions, and nested types
-- **Automatic Change Detection**: Track changes to struct fields with minimal memory overhead (8 bytes)
+- **Interface Validation**: Compile-time validation of interface implementations with clear error messages
+    - **VTable Generation**: Create vtables for dynamic dispatch based on interfaces
+- **Change Detection**: Track changes to struct fields with minimal memory overhead (8 bytes)
 - **Zero Dependencies**: Pure Zig implementation with no external dependencies
 - **Compile-time Safety**: Type-safe reflection with compile-time validation
 - **Memory Efficient**: Shallow type information to avoid compile-time explosion
