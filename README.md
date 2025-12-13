@@ -75,7 +75,7 @@ Notes:
 - `getTypeInfo` returns shallow field and function metadata suitable for runtime use.
 - `TypeInfo.new` is a comptime helper that constructs values from tuple literals; useful for code generation and tests.
 
-### Implements (interface validator)
+### Interface Validation and VTable
 
 `Interface(Template)` provides a compile-time validator and a typed vtable generator. Useful when you want an explicit interface and a vtable for dynamic dispatch.
 
