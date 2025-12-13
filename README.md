@@ -111,7 +111,7 @@ const Writer = struct {
     }
 };
 
-const ReaderWriter = ReaderImpl.extend(Writer); // or use Interfaces(&[_]type{Reader, Writer})
+const ReaderWriter = ReaderImpl.Extend(Writer); // or use Interfaces(&[_]type{Reader, Writer})
 const rw_vt = ReaderWriter.vTable(Buffer);
 rw_vt.write(&buf, 456);
 const new_result = rw_vt.read(&buf);
