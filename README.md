@@ -8,7 +8,7 @@ A lightweight reflection and change detection library for Zig.
 
 - **Runtime Type Information**: Get detailed type information at runtime including fields, functions, and nested types
 - **Interface Validation**: Compile-time validation of interface implementations with clear error messages
-    - **VTable Generation**: Create vtables for dynamic dispatch based on interfaces
+    - **VTable Generation**: Create vtables for dynamic dispatch based on interfaces, with support for interface extension. Tested using std.mem.Allocation.VTable interface.
 - **Change Detection**: Track changes to struct fields with minimal memory overhead (8 bytes)
 - **Zero Dependencies**: Pure Zig implementation with no external dependencies
 - **Branch Quota Efficient**: Shallow type information to avoid compile-time explosion
@@ -81,41 +81,55 @@ Notes:
 `Interface(Template)` provides a compile-time validator and a typed vtable generator. Useful when you want an explicit interface and a vtable for dynamic dispatch.
 
 ```zig
-const Reader = struct {
-    pub fn read(_: *const @This()) u32 {
-        unreachable;
-    }
-};
+    const MyAllocator = struct {
+        base_allocator: std.mem.Allocator,
 
-const Buffer = struct {
-    value: u32 = 42,
+        pub fn init(allc: std.mem.Allocator) @This() {
+            return .{ .base_allocator = allc };
+        }
+        pub fn alloc(self: *@This(), len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+            _ = alignment; // base allocator handles default alignment for u8
+            _ = ret_addr;
+            const buf = self.base_allocator.alloc(u8, len) catch return null;
+            return buf.ptr;
+        }
 
-    pub fn read(self: *const @This()) u32 {
-        return self.value;
-    }
+        pub fn free(self: *@This(), buf: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+            _ = alignment;
+            _ = ret_addr;
+            self.base_allocator.free(buf);
+        }
 
-    pub fn write(self: *@This(), val: u32) void {
-        self.value = val;
-    }
-};
+        pub fn resize(self: *@This(), buf: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+            _ = alignment;
+            _ = ret_addr;
+            return self.base_allocator.resize(buf, new_len);
+        }
 
-const ReaderImpl = Interface(Reader);
+        pub fn remap(self: *@This(), buf: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+            _ = alignment;
+            _ = ret_addr;
+            const res = self.base_allocator.remap(buf, new_len) orelse return null;
+            return res.ptr;
+        }
 
-const vt = ReaderImpl.vTable(Buffer);
-var buf = Buffer{ .value = 123 };
-const result = vt.read(&buf);
+        pub fn allocator(self: *@This()) std.mem.Allocator {
+            const AllocatorImpl = Interface(std.mem.Allocator.VTable);
+            const vt = AllocatorImpl.vTableAsTemplate(@This());
+            return .{
+                .ptr = self,
+                .vtable = &vt,
+            };
+        }
+    };
 
-const Writer = struct {
-    pub fn write(_: *@This(), _: u32) void {
-        unreachable;
-    }
-};
-
-const ReaderWriter = ReaderImpl.Extend(Writer); // or use Interfaces(&[_]type{Reader, Writer})
-const rw_vt = ReaderWriter.vTable(Buffer);
-rw_vt.write(&buf, 456);
-const new_result = rw_vt.read(&buf);
-std.debug.print("Read value: {d}, New value: {d}\n", .{ result, new_result });
+    var myAllocator = MyAllocator.init(std.heap.page_allocator);
+    const allocator = myAllocator.allocator();
+    // Verify we produced a valid vtable pointer matching the template type.
+    std.debug.assert(@intFromPtr(allocator.vtable) != 0);
+    const buf = try allocator.alloc(u8, 128);
+    defer allocator.free(buf);
+    std.debug.assert(buf.len == 128);
 ```
 
 Notes:

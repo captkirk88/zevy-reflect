@@ -298,21 +298,38 @@ pub fn Interface(comptime Template: type) type {
             const template_info = comptime reflect.getTypeInfo(TemplateType);
             const impl_info = comptime reflect.getTypeInfo(Implementation);
             const func_names = template_info.getFuncNames();
+            const tmpl_struct_fields = @typeInfo(TemplateType).@"struct".fields;
+            const use_fields = func_names.len == 0;
 
             return comptime blk: {
-                var fields: [func_names.len]std.builtin.Type.StructField = undefined;
+                const count = if (use_fields) tmpl_struct_fields.len else func_names.len;
+                var fields: [count]std.builtin.Type.StructField = undefined;
 
-                for (func_names, 0..) |name, i| {
-                    const func_info = impl_info.getFunc(name).?;
-                    const PtrType = @TypeOf(func_info.toPtr());
+                if (use_fields) {
+                    for (tmpl_struct_fields, 0..) |fld, i| {
+                        const func_info = impl_info.getFunc(fld.name) orelse @compileError("Implementation missing method: " ++ fld.name);
+                        const PtrType = @TypeOf(func_info.toPtr());
+                        fields[i] = std.builtin.Type.StructField{
+                            .name = fld.name,
+                            .type = PtrType,
+                            .default_value_ptr = null,
+                            .is_comptime = false,
+                            .alignment = @alignOf(PtrType),
+                        };
+                    }
+                } else {
+                    for (func_names, 0..) |name, i| {
+                        const func_info = impl_info.getFunc(name).?;
+                        const PtrType = @TypeOf(func_info.toPtr());
 
-                    fields[i] = std.builtin.Type.StructField{
-                        .name = name[0..name.len :0],
-                        .type = PtrType,
-                        .default_value_ptr = null,
-                        .is_comptime = false,
-                        .alignment = @alignOf(PtrType),
-                    };
+                        fields[i] = std.builtin.Type.StructField{
+                            .name = name[0..name.len :0],
+                            .type = PtrType,
+                            .default_value_ptr = null,
+                            .is_comptime = false,
+                            .alignment = @alignOf(PtrType),
+                        };
+                    }
                 }
 
                 break :blk @Type(.{ .@"struct" = .{
@@ -343,6 +360,35 @@ pub fn Interface(comptime Template: type) type {
 
                 break :blk table;
             };
+        }
+
+        /// Build a vtable that matches the original template's type (useful for externally
+        /// defined vtable structs such as std.mem.Allocator.VTable).
+        ///
+        /// This casts the generated implementation vtable field-by-field into the template
+        /// vtable type, assuming compatible function pointer layouts.
+        pub fn vTableAsTemplate(comptime Implementation: type) TemplateType {
+            const vt = vTable(Implementation);
+            return castVTableToTemplate(Implementation, vt);
+        }
+
+        /// Cast an implementation vtable to the template's exact vtable struct type.
+        pub fn castVTableToTemplate(comptime Implementation: type, vtable: VTableType(Implementation)) TemplateType {
+            comptime {
+                const tmpl_ti = @typeInfo(TemplateType);
+                if (tmpl_ti != .@"struct") {
+                    @compileError("castVTableToTemplate requires a struct Template type (vtable)");
+                }
+            }
+
+            var out: TemplateType = undefined;
+            inline for (@typeInfo(TemplateType).@"struct".fields) |field| {
+                const FieldType = field.type;
+                const src_field = @field(vtable, field.name);
+                const casted: FieldType = @ptrCast(src_field);
+                @field(out, field.name) = casted;
+            }
+            return out;
         }
 
         /// Extend this interface with additional requirements from another template.
@@ -777,4 +823,56 @@ test "Interface - function pointer parameter substitution with self pointer" {
 
     const ProcessorImpl = Interface(Processor);
     ProcessorImpl.validate(MyProcessor);
+}
+
+test "Interface - Allocator vtable" {
+    const MyAllocator = struct {
+        base_allocator: std.mem.Allocator,
+
+        pub fn init(allc: std.mem.Allocator) @This() {
+            return .{ .base_allocator = allc };
+        }
+        pub fn alloc(self: *@This(), len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+            _ = alignment; // base allocator handles default alignment for u8
+            _ = ret_addr;
+            const buf = self.base_allocator.alloc(u8, len) catch return null;
+            return buf.ptr;
+        }
+
+        pub fn free(self: *@This(), buf: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+            _ = alignment;
+            _ = ret_addr;
+            self.base_allocator.free(buf);
+        }
+
+        pub fn resize(self: *@This(), buf: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+            _ = alignment;
+            _ = ret_addr;
+            return self.base_allocator.resize(buf, new_len);
+        }
+
+        pub fn remap(self: *@This(), buf: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+            _ = alignment;
+            _ = ret_addr;
+            const res = self.base_allocator.remap(buf, new_len) orelse return null;
+            return res.ptr;
+        }
+
+        pub fn allocator(self: *@This()) std.mem.Allocator {
+            const AllocatorImpl = Interface(std.mem.Allocator.VTable);
+            const vt = AllocatorImpl.vTableAsTemplate(@This());
+            return .{
+                .ptr = self,
+                .vtable = &vt,
+            };
+        }
+    };
+
+    var myAllocator = MyAllocator.init(std.testing.allocator);
+    const allocator = myAllocator.allocator();
+    // Verify we produced a valid vtable pointer matching the template type.
+    try std.testing.expect(@intFromPtr(allocator.vtable) != 0);
+    const buf = try allocator.alloc(u8, 128);
+    defer allocator.free(buf);
+    try std.testing.expect(buf.len == 128);
 }
