@@ -837,7 +837,6 @@ test "Interface - Allocator vtable" {
         base_allocator: std.mem.Allocator,
 
         const vtable = blk: {
-            @setEvalBranchQuota(2000);
             break :blk Interface(std.mem.Allocator.VTable).vTableAsTemplate(@This());
         };
 

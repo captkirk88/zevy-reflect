@@ -1,5 +1,6 @@
 ### What to do...
 
+- [x] Reduce comptime branch quota as much as possible.
 - [x] Create ParamInfo for FuncInfo
 - [ ] (low) Mixin code gen can have multiple mixins.
 

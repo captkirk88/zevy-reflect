@@ -27,6 +27,30 @@ pub inline fn hashWithSeed(data: []const u8, seed: u64) u64 {
     return std.hash.Wyhash.hash(seed, data);
 }
 
+/// Internal shared storage for visited reflect entries (comptime-only).
+fn visitedData() *[]const ReflectInfo {
+    comptime var data: []const ReflectInfo = &[_]ReflectInfo{};
+    return &data;
+}
+
+/// Look up a previously-built ReflectInfo for the given type/function.
+pub fn lookupVisited(comptime T: type) ?ReflectInfo {
+    const data = visitedData().*;
+    inline for (data) |info| {
+        switch (info) {
+            .type => |ti| if (ti.type == T) return info,
+            .func => |fi| if (std.mem.eql(u8, fi.name, @typeName(T))) return info,
+        }
+    }
+    return null;
+}
+
+/// Add a new ReflectInfo to the global store.
+pub fn pushVisited(comptime info: ReflectInfo) void {
+    const data_ptr = visitedData();
+    data_ptr.* = data_ptr.* ++ [_]ReflectInfo{info};
+}
+
 /// Shallow type information for field types - doesn't recurse into nested types.
 /// This avoids comptime explosion when reflecting complex types with many nested fields.
 pub const ShallowTypeInfo = struct {
@@ -36,16 +60,8 @@ pub const ShallowTypeInfo = struct {
     category: TypeInfo.Category,
 
     pub fn from(comptime T: type) ShallowTypeInfo {
-        return ShallowTypeInfo{
-            .type = T,
-            .name = @typeName(T),
-            .size = safeSizeOf(T),
-            .category = TypeInfo.Category.from(T),
-        };
-    }
-
-    fn fromVisited(comptime T: type, comptime visited: []const ReflectInfo) ShallowTypeInfo {
-        inline for (visited) |info| {
+        const data = visitedData().*;
+        inline for (data) |info| {
             switch (info) {
                 .type => |ti| {
                     if (ti.type == T) {
@@ -60,7 +76,12 @@ pub const ShallowTypeInfo = struct {
                 else => {},
             }
         }
-        return ShallowTypeInfo.from(T);
+        return ShallowTypeInfo{
+            .type = T,
+            .name = @typeName(T),
+            .size = safeSizeOf(T),
+            .category = TypeInfo.Category.from(T),
+        };
     }
 
     /// Get full TypeInfo for this type (computed lazily)
@@ -156,7 +177,7 @@ pub const FuncInfo = struct {
 
     /// Create FuncInfo from a function type
     fn from(comptime FuncType: type) ?FuncInfo {
-        return comptime toFuncInfo(FuncType, &[_]ReflectInfo{});
+        return comptime toFuncInfo(FuncType);
     }
 
     /// Create FuncInfo for a method of a struct given the struct's TypeInfo and method name
@@ -362,8 +383,8 @@ pub const FuncInfo = struct {
     }
 
     // Helper for FuncInfo.from with cycle detection
-    fn toFuncInfo(comptime FuncType: type, comptime visited: []const ReflectInfo) ?FuncInfo {
-        inline for (visited) |info| {
+    fn toFuncInfo(comptime FuncType: type) ?FuncInfo {
+        if (lookupVisited(FuncType)) |info| {
             switch (info) {
                 .func => |fi| {
                     if (std.mem.eql(u8, fi.name, @typeName(FuncType))) return fi;
@@ -382,7 +403,7 @@ pub const FuncInfo = struct {
             .return_type = null,
             .type = ShallowTypeInfo.from(FuncType),
         } };
-        const next_visited = visited ++ [_]ReflectInfo{stub_reflect};
+        pushVisited(stub_reflect);
         if (zig_type_info == .optional) {
             zig_type_info = @typeInfo(zig_type_info.optional.child);
         }
@@ -402,7 +423,7 @@ pub const FuncInfo = struct {
             }
             const ti = @typeInfo(@TypeOf(param.type));
             const param_type = if (ti == .optional) param.type.? else param.type.?;
-            if (comptime toReflectInfo(param_type, next_visited)) |info| {
+            if (comptime toReflectInfo(param_type)) |info| {
                 param_infos[valid_params] = ParamInfo{
                     .info = info,
                     .is_noalias = param.is_noalias,
@@ -414,7 +435,7 @@ pub const FuncInfo = struct {
                 return null;
             }
         }
-        const return_type_info = if (zig_type_info.@"fn".return_type) |ret_type| comptime toReflectInfo(ret_type, next_visited) else null;
+        const return_type_info = if (zig_type_info.@"fn".return_type) |ret_type| comptime toReflectInfo(ret_type) else null;
         return FuncInfo{
             .type = ShallowTypeInfo.from(FuncType),
             .hash = type_hash,
@@ -518,7 +539,7 @@ pub const TypeInfo = struct {
             const target_fields = if (self.fields.len != 0)
                 self.fields
             else
-                comptime TypeInfo.buildFields(T, &[_]ReflectInfo{});
+                comptime TypeInfo.buildFields(T);
 
             if (target_fields.len == 0) {
                 @compileError(std.fmt.comptimePrint(
@@ -574,36 +595,34 @@ pub const TypeInfo = struct {
     ///
     /// *Does not need to be called at comptime.*
     pub inline fn from(comptime T: type) TypeInfo {
-        return comptime toTypeInfo(T, &[_]ReflectInfo{});
+        return comptime toTypeInfo(T);
     }
 
     /// Helper for TypeInfo.from with cycle detection
     /// Uses direct type comparison at comptime instead of hashing to avoid branch quota issues.
-    fn toTypeInfo(comptime T: type, comptime visited: []const ReflectInfo) TypeInfo {
+    fn toTypeInfo(comptime T: type) TypeInfo {
         // Use direct type comparison for cycle detection - cheaper at comptime
-        inline for (visited) |info| {
+        if (lookupVisited(T)) |info| {
             switch (info) {
-                .type => |ti| {
-                    if (ti.type == T) return ti;
-                },
-                else => {},
+                .type => |ti| return ti,
+                else => @compileError("TypeInfo.from cycle detected but found non-type ReflectInfo"),
             }
         }
 
         const type_name = @typeName(T);
         const type_hash = typeHash(T);
         const type_size = safeSizeOf(T);
-
+        const category = Category.from(T);
         // create stub reflect for T and append to visited so recursive refs can find it
-        const stub_reflect = ReflectInfo{ .type = TypeInfo{ .hash = type_hash, .size = type_size, .type = T, .name = type_name, .fields = &[_]FieldInfo{}, .category = .Other } };
-        const next_visited = visited ++ [_]ReflectInfo{stub_reflect};
+        const stub_reflect = ReflectInfo{ .type = TypeInfo{ .hash = type_hash, .size = type_size, .type = T, .name = type_name, .fields = &[_]FieldInfo{}, .category = category } };
+        pushVisited(stub_reflect);
 
         const ti = comptime TypeInfo{
             .hash = type_hash,
             .size = type_size,
             .type = T,
             .name = type_name,
-            .fields = TypeInfo.buildFields(T, next_visited),
+            .fields = TypeInfo.buildFields(T),
             .category = Category.from(T),
         };
         return ti;
@@ -705,7 +724,14 @@ pub const TypeInfo = struct {
         return self.hash == other.hash and self.size == other.size;
     }
 
-    fn buildFields(comptime T: type, comptime visited: []const ReflectInfo) []const FieldInfo {
+    fn buildFields(comptime T: type) []const FieldInfo {
+        if (lookupVisited(T)) |info| {
+            switch (info) {
+                .type => |ti| return ti.fields,
+                else => {},
+            }
+        }
+
         const type_info = @typeInfo(T);
         if (type_info != .@"struct") {
             return &[_]FieldInfo{};
@@ -732,7 +758,7 @@ pub const TypeInfo = struct {
                     .size = field_size,
                     .category = TypeInfo.Category.from(field.type),
                 },
-                .container_type = ShallowTypeInfo.fromVisited(T, visited),
+                .container_type = ShallowTypeInfo.from(T),
             };
             field_count += 1;
         }
@@ -758,7 +784,7 @@ pub const ReflectInfo = union(enum) {
     ///
     /// *Must be called at comptime.*
     pub fn from(comptime T: type) ?ReflectInfo {
-        return toReflectInfo(T, &[_]ReflectInfo{});
+        return toReflectInfo(T);
     }
 
     pub fn getTypeInfo(self: *const ReflectInfo) ?TypeInfo {
@@ -803,47 +829,76 @@ pub const ReflectInfo = union(enum) {
     }
 };
 
-fn toReflectInfo(comptime T: type, comptime visited: []const ReflectInfo) ?ReflectInfo {
-    // If already visited, return the visited ReflectInfo - use direct type comparison
-    inline for (visited) |info| {
-        switch (info) {
-            .type => |ti| {
-                if (ti.type == T) return info;
-            },
-            .func => |fi| {
-                // For functions, compare names since we don't have direct type
-                if (std.mem.eql(u8, fi.name, @typeName(T))) return info;
-            },
-        }
-    }
+fn toReflectInfo(comptime T: type) ?ReflectInfo {
+    @setEvalBranchQuota(5000);
+    if (lookupVisited(T)) |cached| return cached;
+
     const type_info = @typeInfo(T);
 
     switch (type_info) {
         .pointer => {
-            return ReflectInfo{ .type = TypeInfo.from(T) };
+            const ri = ReflectInfo{ .type = TypeInfo.from(T) };
+            pushVisited(ri);
+            return ri;
         },
         .@"opaque" => {
-            return ReflectInfo{ .type = leafTypeInfo(T) };
+            const ri = ReflectInfo{ .type = leafTypeInfo(T) };
+            pushVisited(ri);
+            return ri;
         },
         .optional => {
             // Create TypeInfo for the optional type itself, not the child
-            return ReflectInfo{ .type = TypeInfo.from(T) };
+            const ri = ReflectInfo{ .type = TypeInfo.from(T) };
+            pushVisited(ri);
+            return ri;
         },
         .array, .vector => {
             // Create TypeInfo for the array/vector type itself, not the child
-            return ReflectInfo{ .type = TypeInfo.from(T) };
+            const ri = ReflectInfo{ .type = TypeInfo.from(T) };
+            pushVisited(ri);
+            return ri;
         },
         .error_union => {
             // Create TypeInfo for the error union type itself, not the child
-            return ReflectInfo{ .type = TypeInfo.from(T) };
+            const ri = ReflectInfo{ .type = TypeInfo.from(T) };
+            pushVisited(ri);
+            return ri;
         },
-        .type => return ReflectInfo{ .type = leafTypeInfo(T) },
-        .enum_literal => return ReflectInfo{ .type = leafTypeInfo(T) },
-        .noreturn => return ReflectInfo{ .type = leafTypeInfo(T) },
-        .undefined => return ReflectInfo{ .type = leafTypeInfo(T) },
-        .null => return ReflectInfo{ .type = leafTypeInfo(T) },
-        .comptime_int => return ReflectInfo{ .type = leafTypeInfo(T) },
-        .comptime_float => return ReflectInfo{ .type = leafTypeInfo(T) },
+        .type => {
+            const ri = ReflectInfo{ .type = leafTypeInfo(T) };
+            pushVisited(ri);
+            return ri;
+        },
+        .enum_literal => {
+            const ri = ReflectInfo{ .type = leafTypeInfo(T) };
+            pushVisited(ri);
+            return ri;
+        },
+        .noreturn => {
+            const ri = ReflectInfo{ .type = leafTypeInfo(T) };
+            pushVisited(ri);
+            return ri;
+        },
+        .undefined => {
+            const ri = ReflectInfo{ .type = leafTypeInfo(T) };
+            pushVisited(ri);
+            return ri;
+        },
+        .null => {
+            const ri = ReflectInfo{ .type = leafTypeInfo(T) };
+            pushVisited(ri);
+            return ri;
+        },
+        .comptime_int => {
+            const ri = ReflectInfo{ .type = leafTypeInfo(T) };
+            pushVisited(ri);
+            return ri;
+        },
+        .comptime_float => {
+            const ri = ReflectInfo{ .type = leafTypeInfo(T) };
+            pushVisited(ri);
+            return ri;
+        },
         .error_set => {
             var ri = ReflectInfo{ .type = TypeInfo{
                 .hash = typeHash(T),
@@ -865,25 +920,32 @@ fn toReflectInfo(comptime T: type, comptime visited: []const ReflectInfo) ?Refle
                             .name = @typeName(ErrType),
                             .size = @sizeOf(ErrType),
                         },
-                        .container_type = ShallowTypeInfo.fromVisited(T, visited),
+                        .container_type = ShallowTypeInfo.from(T),
                     };
                 }
                 ri.type.fields = field_infos[0..len];
             } else {
                 ri.type.fields = &[_]FieldInfo{};
             }
+            pushVisited(ri);
             return ri;
         },
         .bool, .int, .float => {
-            return ReflectInfo{ .type = leafTypeInfo(T) };
+            const ri = ReflectInfo{ .type = leafTypeInfo(T) };
+            pushVisited(ri);
+            return ri;
         },
         .@"fn" => |_| {
-            const fi = FuncInfo.toFuncInfo(T, visited) orelse return null;
-            return ReflectInfo{ .func = fi };
+            const fi = FuncInfo.toFuncInfo(T) orelse return null;
+            const ri = ReflectInfo{ .func = fi };
+            pushVisited(ri);
+            return ri;
         },
         .@"struct", .@"enum", .@"union" => {
-            const ti = TypeInfo.toTypeInfo(T, visited);
-            return ReflectInfo{ .type = ti };
+            const ti = TypeInfo.toTypeInfo(T);
+            const ri = ReflectInfo{ .type = ti };
+            pushVisited(ri);
+            return ri;
         },
         else => {},
     }
@@ -1008,7 +1070,7 @@ fn lazyGetFunc(comptime T: type, comptime func_name: []const u8) ?FuncInfo {
 
     inline for (func_type_info.@"fn".params) |param| {
         const param_type = param.type.?;
-        if (comptime toReflectInfo(param_type, &[_]ReflectInfo{})) |info| {
+        if (comptime toReflectInfo(param_type)) |info| {
             param_infos[valid_params] = ParamInfo{
                 .info = info,
                 .is_noalias = param.is_noalias,
@@ -1020,7 +1082,7 @@ fn lazyGetFunc(comptime T: type, comptime func_name: []const u8) ?FuncInfo {
     }
 
     const return_type_info = if (func_type_info.@"fn".return_type) |ret_type|
-        comptime toReflectInfo(ret_type, &[_]ReflectInfo{})
+        comptime toReflectInfo(ret_type)
     else
         null;
 
@@ -1183,7 +1245,7 @@ pub fn hasField(comptime T: type, comptime field_name: []const u8) bool {
         .pointer => hasField(info.pointer.child, field_name),
         .optional => hasField(info.optional.child, field_name),
         .@"struct" => blk: {
-            const fields = comptime TypeInfo.buildFields(T, &[_]ReflectInfo{});
+            const fields = comptime TypeInfo.buildFields(T);
             if (fields.len == 0) break :blk @hasField(T, field_name);
             inline for (fields) |fi| {
                 if (std.mem.eql(u8, fi.name, field_name)) break :blk true;
