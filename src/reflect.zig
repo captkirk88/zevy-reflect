@@ -25,7 +25,7 @@ pub const ShallowTypeInfo = struct {
         return ShallowTypeInfo{
             .type = T,
             .name = @typeName(T),
-            .size = @sizeOf(T),
+            .size = safeSizeOf(T),
         };
     }
     /// Get full TypeInfo for this type (computed lazily)
@@ -99,11 +99,23 @@ pub const FieldInfo = struct {
     }
 };
 
+pub const ParamInfo = struct {
+    info: ReflectInfo,
+    is_noalias: bool = false,
+    is_comptime: bool = false,
+
+    pub fn eql(self: *const ParamInfo, other: *const ParamInfo) bool {
+        return self.is_noalias == other.is_noalias and self.is_comptime == other.is_comptime and self.info.eql(&other.info);
+    }
+};
+
 pub const FuncInfo = struct {
     hash: u64,
     name: []const u8,
-    params: []const ReflectInfo,
+    params: []const ParamInfo,
     return_type: ?ReflectInfo,
+    container_type: ?ShallowTypeInfo = null,
+    type: ShallowTypeInfo,
 
     /// Create FuncInfo from a function type
     fn from(comptime FuncType: type) ?FuncInfo {
@@ -116,6 +128,7 @@ pub const FuncInfo = struct {
         if (ti != .@"struct") {
             return null;
         }
+
         inline for (getDecls(ti)) |decl| {
             if (std.mem.eql(u8, decl.name, func_name)) {
                 const DeclType = @TypeOf(@field(type_info.type, decl.name));
@@ -145,6 +158,7 @@ pub const FuncInfo = struct {
                     )),
                     .name = decl.name,
                     .params = param_infos[0..pi_i],
+                    .container_type = ShallowTypeInfo.from(type_info.type),
                     .return_type = return_ref,
                 };
             }
@@ -154,13 +168,75 @@ pub const FuncInfo = struct {
 
     pub fn getParam(self: *const FuncInfo, index: usize) ?TypeInfo {
         if (index >= self.params.len) return null;
-        return self.params[index];
+        return switch (self.params[index].info) {
+            .type => |ti| ti,
+            else => null,
+        };
     }
 
     pub fn paramsCount(self: *const FuncInfo) usize {
         return self.params.len;
     }
 
+    /// Invoke the function with the given arguments.
+    ///
+    /// args: A tuple of values.
+    pub inline fn invoke(comptime self: *const FuncInfo, args: anytype) InvokeReturnType(self) {
+        const func = self.funcPointer();
+        const ArgsType = @TypeOf(args);
+        const args_info = @typeInfo(ArgsType);
+        const arg_len = switch (args_info) {
+            .@"struct" => |s| blk: {
+                if (!s.is_tuple) @compileError("FuncInfo.invoke expects a tuple of arguments");
+                break :blk s.fields.len;
+            },
+            else => @compileError("FuncInfo.invoke expects a tuple of arguments"),
+        };
+        if (arg_len != self.params.len) {
+            @compileError("FuncInfo.invoke argument count mismatch");
+        }
+
+        var typed_args: std.meta.ArgsTuple(@TypeOf(func)) = undefined;
+
+        inline for (self.params, 0..) |param, i| {
+            const ParamType = switch (param.info) {
+                .type => |ti| ti.type,
+                .func => |fi| fi.type.type,
+                .field => |_| @compileError("FuncInfo.invoke does not support field parameter types"),
+            };
+
+            typed_args[i] = @as(ParamType, args[i]);
+        }
+
+        return @call(.auto, func, typed_args);
+    }
+
+    fn InvokeReturnType(comptime self: *const FuncInfo) type {
+        const func = funcPointer(self);
+        return @typeInfo(@TypeOf(func)).@"fn".return_type orelse void;
+    }
+
+    pub inline fn toPtr(comptime self: *const FuncInfo) FnPtrType(self) {
+        if (self.container_type) |ct| {
+            return &@field(ct.type, self.name);
+        }
+        return &@field(self.type.type, self.name);
+    }
+
+    fn FnPtrType(comptime self: *const FuncInfo) type {
+        return *const @TypeOf(self.funcPointer());
+    }
+
+    fn funcPointer(comptime self: *const FuncInfo) (if (self.container_type != null)
+        @TypeOf(@field(self.container_type.?.type, self.name))
+    else
+        self.type.type) {
+        if (self.container_type) |ct| {
+            return @field(ct.type, self.name);
+        }
+
+        return self.type.type;
+    }
     /// Get a string representation of the function signature
     ///
     /// *Does not need to be called at comptime.*
@@ -189,13 +265,21 @@ pub const FuncInfo = struct {
     }
 
     fn getStringRepresentation(self: *const FuncInfo, omit_self: bool) []const u8 {
+        var prefix_str: []const u8 = "";
         var params_str: []const u8 = "";
+
+        if (self.container_type) |ct| {
+            // Prefix self container type
+            prefix_str = std.fmt.comptimePrint("{s}.", .{getSimpleTypeName(ct.type)});
+        }
+        //
+        prefix_str = prefix_str ++ self.name;
+
         var first: bool = true;
         inline for (self.params, 0..) |param, i| {
             // Skip first parameter if omit_self is true
             if (omit_self and i == 0) continue;
-
-            switch (param) {
+            switch (param.info) {
                 .type => |ti| {
                     if (first) params_str = ti.name else params_str = std.fmt.comptimePrint("{s}, {s}", .{ params_str, ti.name });
                 },
@@ -212,7 +296,7 @@ pub const FuncInfo = struct {
             .field => |_| "void",
         } else "void";
 
-        return std.fmt.comptimePrint("fn {s}({s}) -> {s}", .{ self.name, params_str, return_str });
+        return std.fmt.comptimePrint("fn {s}({s}) -> {s}", .{ prefix_str, params_str, return_str });
     }
 
     // Helper for FuncInfo.from with cycle detection
@@ -226,28 +310,29 @@ pub const FuncInfo = struct {
             }
         }
 
-        var type_info = @typeInfo(FuncType);
+        var zig_type_info = @typeInfo(FuncType);
         const type_hash = typeHash(FuncType);
         // create a stub ReflectInfo for this func so recursive references can find it
         const stub_reflect = ReflectInfo{ .func = FuncInfo{
             .hash = type_hash,
             .name = @typeName(FuncType),
-            .params = &[_]ReflectInfo{},
+            .params = &[_]ParamInfo{},
             .return_type = null,
+            .type = ShallowTypeInfo.from(FuncType),
         } };
         const next_visited = visited ++ [_]ReflectInfo{stub_reflect};
-        if (type_info == .optional) {
-            type_info = @typeInfo(type_info.optional.child);
+        if (zig_type_info == .optional) {
+            zig_type_info = @typeInfo(zig_type_info.optional.child);
         }
-        if (type_info != .@"fn") {
+        if (zig_type_info != .@"fn") {
             @compileError(std.fmt.comptimePrint(
                 "FuncInfo can only be created from function types: {s}",
                 .{@typeName(FuncType)},
             ));
         }
-        var param_infos: [type_info.@"fn".params.len]ReflectInfo = undefined;
+        var param_infos: [zig_type_info.@"fn".params.len]ParamInfo = undefined;
         var valid_params: usize = 0;
-        inline for (type_info.@"fn".params, 0..) |param, i| {
+        inline for (zig_type_info.@"fn".params, 0..) |param, i| {
             _ = i;
             // Handle null param.type (anytype parameters)
             if (param.type == null) {
@@ -256,16 +341,20 @@ pub const FuncInfo = struct {
             const ti = @typeInfo(@TypeOf(param.type));
             const param_type = if (ti == .optional) param.type.? else param.type.?;
             if (comptime toReflectInfo(param_type, next_visited)) |info| {
-                param_infos[valid_params] = info;
+                param_infos[valid_params] = ParamInfo{
+                    .info = info,
+                    .is_noalias = param.is_noalias,
+                };
                 valid_params += 1;
             } else {
-                // Skip unsupported parameter types (like *anyopaque) instead of erroring
+                // Skip unsupported parameter types instead of erroring
                 // Return null to indicate this function can't be fully reflected
                 return null;
             }
         }
-        const return_type_info = if (type_info.@"fn".return_type) |ret_type| comptime toReflectInfo(ret_type, next_visited) else null;
+        const return_type_info = if (zig_type_info.@"fn".return_type) |ret_type| comptime toReflectInfo(ret_type, next_visited) else null;
         return FuncInfo{
+            .type = ShallowTypeInfo.from(FuncType),
             .hash = type_hash,
             .name = @typeName(FuncType),
             .params = param_infos[0..valid_params],
@@ -274,14 +363,41 @@ pub const FuncInfo = struct {
     }
 };
 
+fn safeSizeOf(comptime T: type) usize {
+    return switch (@typeInfo(T)) {
+        .@"opaque" => 0,
+        .comptime_int => 0,
+        .comptime_float => 0,
+        .type => 0,
+        .enum_literal => 0,
+        .undefined => 0,
+        .null => 0,
+        .noreturn => 0,
+        .@"fn" => 0,
+        else => @sizeOf(T),
+    };
+}
+
+fn leafTypeInfo(comptime T: type) TypeInfo {
+    return TypeInfo{
+        .hash = typeHash(T),
+        .size = safeSizeOf(T),
+        .type = T,
+        .name = @typeName(T),
+        .fields = &[_]FieldInfo{},
+    };
+}
+
 pub const TypeInfo = struct {
     hash: u64,
     size: usize,
     type: type,
     name: []const u8,
     fields: []const FieldInfo,
+    is_slice: bool = false,
+    is_pointer: bool = false,
 
-    /// Create `TypeInfo` from any type except opaque types (like `anyopaque`)
+    /// Create `TypeInfo` from any type. Opaque/unsized types use a size of 0.
     ///
     /// *Must be called at comptime.*
     ///
@@ -303,18 +419,25 @@ pub const TypeInfo = struct {
             }
         }
 
+        const zig_type_info = @typeInfo(T);
+        const is_pointer = zig_type_info == .pointer;
+        const is_slice = zig_type_info == .array or zig_type_info == .vector;
+
         const type_name = @typeName(T);
         const type_hash = typeHash(T);
+        const type_size = safeSizeOf(T);
 
         // create stub reflect for T and append to visited so recursive refs can find it
-        const stub_reflect = ReflectInfo{ .type = TypeInfo{ .hash = type_hash, .size = @sizeOf(T), .type = T, .name = type_name, .fields = &[_]FieldInfo{} } };
+        const stub_reflect = ReflectInfo{ .type = TypeInfo{ .hash = type_hash, .size = type_size, .type = T, .name = type_name, .fields = &[_]FieldInfo{} } };
         const next_visited = visited ++ [_]ReflectInfo{stub_reflect};
 
         const ti = comptime TypeInfo{
             .hash = type_hash,
-            .size = @sizeOf(T),
+            .size = type_size,
             .type = T,
             .name = type_name,
+            .is_pointer = is_pointer,
+            .is_slice = is_slice,
             .fields = TypeInfo.buildFields(T, next_visited),
         };
         return ti;
@@ -502,16 +625,11 @@ fn toReflectInfo(comptime T: type, comptime visited: []const ReflectInfo) ?Refle
     const type_info = @typeInfo(T);
 
     switch (type_info) {
-        .pointer => |info| {
-            // Only skip opaque pointers like *anyopaque
-            if (@typeInfo(info.child) == .@"opaque") {
-                return null;
-            }
-            // Create TypeInfo for the pointer/slice type itself, not the child
+        .pointer => {
             return ReflectInfo{ .type = TypeInfo.from(T) };
         },
         .@"opaque" => {
-            return null;
+            return ReflectInfo{ .type = leafTypeInfo(T) };
         },
         .optional => {
             // Create TypeInfo for the optional type itself, not the child
@@ -525,10 +643,17 @@ fn toReflectInfo(comptime T: type, comptime visited: []const ReflectInfo) ?Refle
             // Create TypeInfo for the error union type itself, not the child
             return ReflectInfo{ .type = TypeInfo.from(T) };
         },
+        .type => return ReflectInfo{ .type = leafTypeInfo(T) },
+        .enum_literal => return ReflectInfo{ .type = leafTypeInfo(T) },
+        .noreturn => return ReflectInfo{ .type = leafTypeInfo(T) },
+        .undefined => return ReflectInfo{ .type = leafTypeInfo(T) },
+        .null => return ReflectInfo{ .type = leafTypeInfo(T) },
+        .comptime_int => return ReflectInfo{ .type = leafTypeInfo(T) },
+        .comptime_float => return ReflectInfo{ .type = leafTypeInfo(T) },
         .error_set => {
             var ri = ReflectInfo{ .type = TypeInfo{
                 .hash = typeHash(T),
-                .size = @sizeOf(T),
+                .size = safeSizeOf(T),
                 .type = T,
                 .name = @typeName(T),
                 .fields = undefined,
@@ -556,13 +681,7 @@ fn toReflectInfo(comptime T: type, comptime visited: []const ReflectInfo) ?Refle
             return ri;
         },
         .bool, .int, .float => {
-            return ReflectInfo{ .type = TypeInfo{
-                .hash = typeHash(T),
-                .size = @sizeOf(T),
-                .type = T,
-                .name = @typeName(T),
-                .fields = &[_]FieldInfo{},
-            } };
+            return ReflectInfo{ .type = leafTypeInfo(T) };
         },
         .@"fn" => |_| {
             const fi = FuncInfo.toFuncInfo(T, visited) orelse return null;
@@ -690,13 +809,16 @@ fn lazyGetFunc(comptime T: type, comptime func_name: []const u8) ?FuncInfo {
     }
 
     // Build FuncInfo for this specific function
-    var param_infos: [decl_type_info.@"fn".params.len]ReflectInfo = undefined;
+    var param_infos: [decl_type_info.@"fn".params.len]ParamInfo = undefined;
     var valid_params: usize = 0;
 
     inline for (decl_type_info.@"fn".params) |param| {
         const param_type = param.type.?;
         if (comptime toReflectInfo(param_type, &[_]ReflectInfo{})) |info| {
-            param_infos[valid_params] = info;
+            param_infos[valid_params] = ParamInfo{
+                .info = info,
+                .is_noalias = param.is_noalias,
+            };
             valid_params += 1;
         } else {
             return null;
@@ -713,6 +835,8 @@ fn lazyGetFunc(comptime T: type, comptime func_name: []const u8) ?FuncInfo {
         .name = func_name,
         .params = param_infos[0..valid_params],
         .return_type = return_type_info,
+        .container_type = ShallowTypeInfo.from(T),
+        .type = ShallowTypeInfo.from(DeclType),
     };
 }
 
@@ -1132,7 +1256,7 @@ test "reflect - function type" {
             // param is a ReflectInfo; expect its type to be i32
             var saw = false;
             inline for (fi.params) |p| {
-                switch (p) {
+                switch (p.info) {
                     .type => |pti| {
                         try std.testing.expectEqualStrings(@typeName(i32), pti.name);
                         saw = true;
@@ -1142,6 +1266,36 @@ test "reflect - function type" {
             }
             try std.testing.expect(saw);
         },
+        else => try std.testing.expect(false),
+    }
+}
+
+test "reflect - anyopaque support" {
+    const ptr_info = getInfo(*anyopaque) orelse unreachable;
+    switch (ptr_info) {
+        .type => |ti| {
+            try std.testing.expectEqualStrings(@typeName(*anyopaque), ti.name);
+        },
+        else => try std.testing.expect(false),
+    }
+
+    const opaque_info = getInfo(anyopaque) orelse unreachable;
+    switch (opaque_info) {
+        .type => |ti| {
+            try std.testing.expectEqualStrings(@typeName(anyopaque), ti.name);
+            try std.testing.expectEqual(@as(usize, 0), ti.size);
+        },
+        else => try std.testing.expect(false),
+    }
+}
+
+test "reflect - function with anyopaque param" {
+    const FnType = fn (*anyopaque) void;
+    const fi = comptime FuncInfo.from(FnType) orelse unreachable;
+
+    try std.testing.expectEqual(@as(usize, 1), fi.params.len);
+    switch (fi.params[0].info) {
+        .type => |ti| try std.testing.expectEqualStrings(@typeName(*anyopaque), ti.name),
         else => try std.testing.expect(false),
     }
 }
@@ -1364,7 +1518,7 @@ test "reflect - fromMethod slice parameter type" {
     std.debug.print("Params: {d}\n", .{func_info.params.len});
 
     inline for (func_info.params, 0..) |param, i| {
-        switch (param) {
+        switch (param.info) {
             .type => |ti| {
                 std.debug.print("  Param {d}: {s}\n", .{ i, @typeName(ti.type) });
             },
@@ -1375,7 +1529,7 @@ test "reflect - fromMethod slice parameter type" {
     }
 
     // Check that param 1 is []const u8, not u8
-    switch (func_info.params[1]) {
+    switch (func_info.params[1].info) {
         .type => |ti| {
             try std.testing.expectEqual([]const u8, ti.type);
         },
@@ -1402,4 +1556,38 @@ test "reflect - getFunc finds method" {
     }
 
     try std.testing.expect(func_info != null);
+}
+
+test "FuncInfo.invoke calls function" {
+    const Target = struct {
+        pub fn addOne(value: *i32) i32 {
+            return value.* + 1;
+        }
+    };
+
+    const ti = comptime TypeInfo.from(Target);
+    const fi = ti.getFunc("addOne").?;
+
+    var value: i32 = 41;
+    const result = fi.invoke(.{&value});
+
+    try std.testing.expectEqual(@as(i32, 42), result);
+    std.debug.print("invoked: {s}\n", .{fi.toString()});
+}
+
+test "FuncInfo.toPtr" {
+    const Target = struct {
+        pub fn multiply(a: i32, b: i32) i32 {
+            return a * b;
+        }
+    };
+
+    const ti = comptime TypeInfo.from(Target);
+    const fi = ti.getFunc("multiply").?;
+
+    const fn_ptr = comptime fi.toPtr();
+
+    const result = fn_ptr(6, 7);
+    try std.testing.expectEqual(@as(i32, 42), result);
+    std.debug.print("Function pointer call result: {d}\n", .{result});
 }

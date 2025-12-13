@@ -68,35 +68,47 @@ pub fn Implements(comptime Template: type) type {
 
                                 // Check if template param references the template type (self parameter)
                                 var is_tmpl_self = false;
-                                if (tmpl_param == .type) {
-                                    const tmpl_type = tmpl_param.type.type;
-                                    if (tmpl_type == Template_) {
-                                        is_tmpl_self = true;
-                                    } else if (@typeInfo(tmpl_type) == .pointer) {
-                                        const child = @typeInfo(tmpl_type).pointer.child;
-                                        if (child == Template_) {
+                                switch (tmpl_param.info) {
+                                    .type => |ti| {
+                                        const tmpl_type = ti.type;
+                                        if (tmpl_type == Template_) {
                                             is_tmpl_self = true;
+                                        } else if (@typeInfo(tmpl_type) == .pointer) {
+                                            const child = @typeInfo(tmpl_type).pointer.child;
+                                            if (child == Template_) {
+                                                is_tmpl_self = true;
+                                            }
                                         }
-                                    }
+                                    },
+                                    else => {},
                                 }
 
                                 // Check if impl param references the impl type (self parameter)
                                 var is_impl_self = false;
-                                if (impl_param == .type) {
-                                    const impl_type = impl_param.type.type;
-                                    if (impl_type == Implementation) {
-                                        is_impl_self = true;
-                                    } else if (@typeInfo(impl_type) == .pointer) {
-                                        const child = @typeInfo(impl_type).pointer.child;
-                                        if (child == Implementation) {
+                                switch (impl_param.info) {
+                                    .type => |ti| {
+                                        const impl_type = ti.type;
+                                        if (impl_type == Implementation) {
                                             is_impl_self = true;
+                                        } else if (@typeInfo(impl_type) == .pointer) {
+                                            const child = @typeInfo(impl_type).pointer.child;
+                                            if (child == Implementation) {
+                                                is_impl_self = true;
+                                            }
                                         }
-                                    }
+                                    },
+                                    else => {},
                                 }
 
                                 // Both are self parameters - they match
                                 if (is_tmpl_self and is_impl_self) {
                                     continue;
+                                }
+
+                                // If only one is self, mismatch
+                                if (is_tmpl_self != is_impl_self) {
+                                    param_match = false;
+                                    break;
                                 }
 
                                 // Otherwise check if they're equal
@@ -121,6 +133,59 @@ pub fn Implements(comptime Template: type) type {
                     @compileError(error_msg);
                 }
             }
+        }
+
+        /// Get the struct type representing the vtable for a given implementation.
+        /// The fields correspond to the template's method names and hold typed function pointers.
+        fn VTableType(comptime Implementation: type) type {
+            const template_info = reflect.getTypeInfo(Template_);
+            const impl_info = reflect.getTypeInfo(Implementation);
+            const func_names = template_info.getFuncNames();
+
+            return comptime blk: {
+                var fields: [func_names.len]std.builtin.Type.StructField = undefined;
+
+                for (func_names, 0..) |name, i| {
+                    const func_info = impl_info.getFunc(name).?;
+                    const PtrType = @TypeOf(func_info.toPtr());
+
+                    fields[i] = std.builtin.Type.StructField{
+                        .name = name[0..name.len :0],
+                        .type = PtrType,
+                        .default_value_ptr = null,
+                        .is_comptime = false,
+                        .alignment = @alignOf(PtrType),
+                    };
+                }
+
+                break :blk @Type(.{ .@"struct" = .{
+                    .layout = .auto,
+                    .fields = &fields,
+                    .decls = &.{},
+                    .is_tuple = false,
+                } });
+            };
+        }
+
+        /// Build and return a vtable instance for the implementation. This both validates
+        /// the implementation and provides typed function pointers grouped by template methods.
+        pub fn vTable(comptime Implementation: type) VTableType(Implementation) {
+            return comptime blk: {
+                // Reuse validation to ensure the implementation matches the template contract.
+                validate(Implementation);
+
+                const template_info = reflect.getTypeInfo(Template_);
+                const impl_info = reflect.getTypeInfo(Implementation);
+                const func_names = template_info.getFuncNames();
+
+                var table: VTableType(Implementation) = undefined;
+                for (func_names) |name| {
+                    const func_info = impl_info.getFunc(name).?;
+                    @field(table, name) = func_info.toPtr();
+                }
+
+                break :blk table;
+            };
         }
     };
 }
@@ -188,4 +253,28 @@ test "Implements - reusable validator" {
     const LoggerImpl = Implements(Logger);
     LoggerImpl.validate(SimpleLogger);
     LoggerImpl.validate(DetailedLogger);
+}
+
+test "Implements.vTable builds vtable" {
+    const Drawable = struct {
+        pub fn draw(self: *@This()) void {
+            _ = self;
+        }
+    };
+
+    const Sprite = struct {
+        called: bool = false,
+
+        pub fn draw(self: *@This()) void {
+            self.called = true;
+        }
+    };
+
+    const DrawableImpl = Implements(Drawable);
+    const vt = DrawableImpl.vTable(Sprite);
+
+    var sprite = Sprite{};
+    vt.draw(&sprite);
+
+    try std.testing.expect(sprite.called);
 }
