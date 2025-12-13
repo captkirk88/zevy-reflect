@@ -595,9 +595,8 @@ test "Interface.extend hierarchical composition" {
 
 test "Const-correct interfaces" {
     const Reader = struct {
-        pub fn read(self: *const @This()) u32 {
-            _ = self;
-            return 42;
+        pub fn read(_: *const @This()) u32 {
+            unreachable;
         }
     };
 
@@ -607,16 +606,31 @@ test "Const-correct interfaces" {
         pub fn read(self: *const @This()) u32 {
             return self.value;
         }
+
+        pub fn write(self: *@This(), val: u32) void {
+            self.value = val;
+        }
     };
 
     const ReaderImpl = Interface(Reader);
-    ReaderImpl.validate(Buffer);
 
     const vt = ReaderImpl.vTable(Buffer);
-    const buf = Buffer{ .value = 123 };
+    var buf = Buffer{ .value = 123 };
     const result = vt.read(&buf);
 
+    const Writer = struct {
+        pub fn write(_: *@This(), _: u32) void {
+            unreachable;
+        }
+    };
+
+    const ReaderWriter = ReaderImpl.extend(Writer); // or use Interfaces(&[_]type{Reader, Writer})
+    const rw_vt = ReaderWriter.vTable(Buffer);
+    rw_vt.write(&buf, 456);
+    const new_result = rw_vt.read(&buf);
+    std.debug.print("Read value: {d}, New value: {d}\n", .{ result, new_result });
     try std.testing.expectEqual(@as(u32, 123), result);
+    try std.testing.expectEqual(@as(u32, 456), new_result);
 }
 
 test "Const-correct interfaces - mutable implementation allowed for const template" {

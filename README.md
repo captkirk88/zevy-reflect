@@ -81,33 +81,47 @@ Notes:
 `Interface(Template)` provides a compile-time validator and a typed vtable generator. Useful when you want an explicit interface and a vtable for dynamic dispatch.
 
 ```zig
-const reflect = @import("zevy_reflect");
-
-const Drawable = struct {
-    pub fn draw(self: *@This()) void {}
+const Reader = struct {
+    pub fn read(_: *const @This()) u32 {
+        unreachable;
+    }
 };
 
-const Sprite = struct {
-    called: bool = false;
-    pub fn draw(self: *@This()) void { self.called = true; }
+const Buffer = struct {
+    value: u32 = 42,
+
+    pub fn read(self: *const @This()) u32 {
+        return self.value;
+    }
+
+    pub fn write(self: *@This(), val: u32) void {
+        self.value = val;
+    }
 };
 
-comptime {
-    const DImpl = reflect.Interface(Drawable);
-    // Validate at comptime (will produce compile error if missing methods)
-    DImpl.validate(Sprite);
+const ReaderImpl = Interface(Reader);
 
-    // Build a vtable for Sprite and call through it
-    const Vt = DImpl.vTable(Sprite);
-    var s = Sprite{};
-    Vt.draw(&s);
-    try std.testing.expect(s.called);
-}
+const vt = ReaderImpl.vTable(Buffer);
+var buf = Buffer{ .value = 123 };
+const result = vt.read(&buf);
+
+const Writer = struct {
+    pub fn write(_: *@This(), _: u32) void {
+        unreachable;
+    }
+};
+
+const ReaderWriter = ReaderImpl.extend(Writer); // or use Interfaces(&[_]type{Reader, Writer})
+const rw_vt = ReaderWriter.vTable(Buffer);
+rw_vt.write(&buf, 456);
+const new_result = rw_vt.read(&buf);
+std.debug.print("Read value: {d}, New value: {d}\n", .{ result, new_result });
 ```
 
 Notes:
 - `validate` checks method names and signatures (including handling `self`), emitting clear compile-time errors when mismatched.
 - `vTable` returns a compile-time constructed struct of function pointers matching the template methods.
+- `extend` allows adding another interface to create composite interfaces.
 
 ### Change Detection
 
