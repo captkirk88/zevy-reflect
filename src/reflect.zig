@@ -430,6 +430,7 @@ fn leafTypeInfo(comptime T: type) TypeInfo {
         .type = T,
         .name = @typeName(T),
         .fields = &[_]FieldInfo{},
+        .category = TypeInfo.Category.from(T),
     };
 }
 
@@ -439,8 +440,29 @@ pub const TypeInfo = struct {
     type: type,
     name: []const u8,
     fields: []const FieldInfo,
-    is_slice: bool = false,
-    is_pointer: bool = false,
+    category: Category,
+
+    const Category = enum {
+        Struct,
+        Enum,
+        Union,
+        Slice,
+        Vector,
+        Pointer,
+        Other,
+
+        pub fn from(comptime T: type) Category {
+            const ti = @typeInfo(T);
+            return switch (ti) {
+                .@"struct" => .Struct,
+                .@"enum" => .Enum,
+                .@"union" => .Union,
+                .array, .vector => .Slice,
+                .pointer => .Pointer,
+                else => .Other,
+            };
+        }
+    };
 
     /// Create a new value of this type from a tuple literal (e.g. `new(.{})` or `new(.{ .a = 32 })`).
     /// For structs, tuple fields are matched by name; omitted fields use their defaults.
@@ -551,16 +573,12 @@ pub const TypeInfo = struct {
             }
         }
 
-        const zig_type_info = @typeInfo(T);
-        const is_pointer = zig_type_info == .pointer;
-        const is_slice = zig_type_info == .array or zig_type_info == .vector;
-
         const type_name = @typeName(T);
         const type_hash = typeHash(T);
         const type_size = safeSizeOf(T);
 
         // create stub reflect for T and append to visited so recursive refs can find it
-        const stub_reflect = ReflectInfo{ .type = TypeInfo{ .hash = type_hash, .size = type_size, .type = T, .name = type_name, .fields = &[_]FieldInfo{} } };
+        const stub_reflect = ReflectInfo{ .type = TypeInfo{ .hash = type_hash, .size = type_size, .type = T, .name = type_name, .fields = &[_]FieldInfo{}, .category = .Other } };
         const next_visited = visited ++ [_]ReflectInfo{stub_reflect};
 
         const ti = comptime TypeInfo{
@@ -568,9 +586,8 @@ pub const TypeInfo = struct {
             .size = type_size,
             .type = T,
             .name = type_name,
-            .is_pointer = is_pointer,
-            .is_slice = is_slice,
             .fields = TypeInfo.buildFields(T, next_visited),
+            .category = Category.from(T),
         };
         return ti;
     }
@@ -625,13 +642,8 @@ pub const TypeInfo = struct {
     }
 
     /// Check if this TypeInfo represents a pointer type
-    pub inline fn isPointer(self: *const TypeInfo) bool {
-        return self.is_pointer;
-    }
-
-    /// Check if this TypeInfo represents a array or vector type
-    pub inline fn isSlice(self: *const TypeInfo) bool {
-        return self.is_slice;
+    pub inline fn getCategory(self: *const TypeInfo) Category {
+        return self.category;
     }
 
     /// Get a shallow version of this TypeInfo (no field details)
@@ -660,10 +672,11 @@ pub const TypeInfo = struct {
     }
 
     fn getStringRepresentation(self: *const TypeInfo, simple_name: bool) []const u8 {
-        return std.fmt.comptimePrint("TypeInfo{{ name {s}, size: {d}, hash: {x}}}", .{
+        return std.fmt.comptimePrint("TypeInfo{{ name {s}, size: {d}, hash: {x}, category: {s}}}", .{
             if (simple_name) simplifyTypeName(self.name) else self.name,
             self.size,
             self.hash,
+            @tagName(self.category),
         });
     }
 
@@ -720,6 +733,7 @@ pub const ReflectInfo = union(enum) {
         .type = void,
         .fields = &[_]FieldInfo{},
         .name = "unknown",
+        .category = .Other,
     } };
 
     /// Create ReflectInfo from any type with cycle detection

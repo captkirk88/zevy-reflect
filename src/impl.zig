@@ -351,11 +351,20 @@ pub fn Interface(comptime Template: type) type {
                 const template_info = reflect.getTypeInfo(TemplateType);
                 const impl_info = reflect.getTypeInfo(Implementation);
                 const func_names = template_info.getFuncNames();
+                const tmpl_struct_fields = @typeInfo(TemplateType).@"struct".fields;
+                const use_fields = func_names.len == 0;
 
                 var table: VTableType(Implementation) = undefined;
-                for (func_names) |name| {
-                    const func_info = impl_info.getFunc(name).?;
-                    @field(table, name) = func_info.toPtr();
+                if (use_fields) {
+                    for (tmpl_struct_fields) |fld| {
+                        const func_info = impl_info.getFunc(fld.name) orelse @compileError("Implementation missing method: " ++ fld.name);
+                        @field(table, fld.name) = func_info.toPtr();
+                    }
+                } else {
+                    for (func_names) |name| {
+                        const func_info = impl_info.getFunc(name).?;
+                        @field(table, name) = func_info.toPtr();
+                    }
                 }
 
                 break :blk table;
@@ -374,16 +383,15 @@ pub fn Interface(comptime Template: type) type {
 
         /// Cast an implementation vtable to the template's exact vtable struct type.
         pub fn castVTableToTemplate(comptime Implementation: type, vtable: VTableType(Implementation)) TemplateType {
-            comptime {
-                const tmpl_ti = @typeInfo(TemplateType);
-                if (tmpl_ti != .@"struct") {
-                    @compileError("castVTableToTemplate requires a struct Template type (vtable)");
-                }
-            }
+            comptime var tmpl_ti: reflect.TypeInfo = undefined;
+            tmpl_ti = comptime reflect.TypeInfo.from(TemplateType);
+            comptime if (tmpl_ti.category != .Struct) {
+                @compileError("castVTableToTemplate requires a struct Template type (vtable)");
+            };
 
             var out: TemplateType = undefined;
-            inline for (@typeInfo(TemplateType).@"struct".fields) |field| {
-                const FieldType = field.type;
+            inline for (tmpl_ti.fields) |field| {
+                const FieldType = field.type.type;
                 const src_field = @field(vtable, field.name);
                 const casted: FieldType = @ptrCast(src_field);
                 @field(out, field.name) = casted;
@@ -829,6 +837,11 @@ test "Interface - Allocator vtable" {
     const MyAllocator = struct {
         base_allocator: std.mem.Allocator,
 
+        const vtable = blk: {
+            @setEvalBranchQuota(5000);
+            break :blk Interface(std.mem.Allocator.VTable).vTableAsTemplate(@This());
+        };
+
         pub fn init(allc: std.mem.Allocator) @This() {
             return .{ .base_allocator = allc };
         }
@@ -859,11 +872,9 @@ test "Interface - Allocator vtable" {
         }
 
         pub fn allocator(self: *@This()) std.mem.Allocator {
-            const AllocatorImpl = Interface(std.mem.Allocator.VTable);
-            const vt = AllocatorImpl.vTableAsTemplate(@This());
             return .{
                 .ptr = self,
-                .vtable = &vt,
+                .vtable = &vtable,
             };
         }
     };
