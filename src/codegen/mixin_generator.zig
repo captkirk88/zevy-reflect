@@ -28,6 +28,8 @@ pub const ConflictStrategy = enum {
 
 /// Generate mixin code at comptime
 ///
+/// *Must be called at comptime.*
+///
 /// *Experimental*
 pub fn generateMixinCode(
     comptime Base: type,
@@ -175,9 +177,9 @@ fn generateMethodWrappers(
     return code;
 }
 
-fn isSelfParameter(param: reflect.ReflectInfo, comptime T: type) bool {
-    if (param != .type) return false;
-    const param_type = param.type.type;
+fn isSelfParameter(param: reflect.ParamInfo, comptime T: type) bool {
+    if (param.info != .type) return false;
+    const param_type = param.info.type.type;
 
     if (param_type == T) return true;
 
@@ -239,8 +241,8 @@ fn generateMethodWrapper(
         if (i == 0) {
             // Self parameter - determine mutability
             const is_const = blk: {
-                if (param == .type) {
-                    const pt = param.type.type;
+                if (param.info == .type) {
+                    const pt = param.info.type.type;
                     if (@typeInfo(pt) == .pointer) {
                         const ptr_info = @typeInfo(pt).pointer;
                         break :blk ptr_info.is_const;
@@ -347,6 +349,6 @@ test "generate mixin code" {
         .conflict_strategy = .extension_wins,
     };
 
-    const code = generateMixinCode(Base, Extension, config);
+    const code = comptime generateMixinCode(Base, Extension, config);
     std.debug.print("Generated Mixin Code:\n{s}\n", .{code});
 }
