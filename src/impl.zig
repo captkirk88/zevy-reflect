@@ -267,7 +267,7 @@ pub fn Interface(comptime Template: type) type {
 
         /// Extend this interface with additional requirements from another template.
         /// Returns a new interface that requires both sets of methods.
-        pub fn extend(comptime Extension: type) type {
+        pub fn Extend(comptime Extension: type) type {
             return struct {
                 pub const BaseType = Template;
                 pub const ExtensionType = Extension;
@@ -566,7 +566,7 @@ test "Interface.extend hierarchical composition" {
     };
 
     // Extend Drawable with Updatable
-    const DrawableUpdatable = Interface(Drawable).extend(Updatable);
+    const DrawableUpdatable = Interface(Drawable).Extend(Updatable);
     const vt = DrawableUpdatable.vTable(GameObject);
 
     var obj = GameObject{};
@@ -624,7 +624,7 @@ test "Const-correct interfaces" {
         }
     };
 
-    const ReaderWriter = ReaderImpl.extend(Writer); // or use Interfaces(&[_]type{Reader, Writer})
+    const ReaderWriter = ReaderImpl.Extend(Writer); // or use Interfaces(&[_]type{Reader, Writer})
     const rw_vt = ReaderWriter.vTable(Buffer);
     rw_vt.write(&buf, 456);
     const new_result = rw_vt.read(&buf);
