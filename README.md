@@ -154,10 +154,6 @@ if (tracker.isChanged()) {
 Caveats:
 - The tracker compares raw bytes for tracked fields; pointer/slice/array contents are hashed as their pointer/length/contents as appropriate. Be cautious with non-stable data (e.g., transient pointers).
 
-## Examples
-
-See the `src` tests for many small, runnable examples demonstrating edge cases (opaque types, packed structs, functions with anyopaque params, etc.).
-
 ## Contributing
 
 1. Fork the repository
