@@ -298,7 +298,7 @@ pub fn Interface(comptime Template: type) type {
             const template_info = comptime reflect.getTypeInfo(TemplateType);
             const impl_info = comptime reflect.getTypeInfo(Implementation);
             const func_names = template_info.getFuncNames();
-            const tmpl_struct_fields = @typeInfo(TemplateType).@"struct".fields;
+            const tmpl_struct_fields = template_info.fields;
             const use_fields = func_names.len == 0;
 
             return comptime blk: {
@@ -310,7 +310,7 @@ pub fn Interface(comptime Template: type) type {
                         const func_info = impl_info.getFunc(fld.name) orelse @compileError("Implementation missing method: " ++ fld.name);
                         const PtrType = @TypeOf(func_info.toPtr());
                         fields[i] = std.builtin.Type.StructField{
-                            .name = fld.name,
+                            .name = fld.name[0..fld.name.len :0],
                             .type = PtrType,
                             .default_value_ptr = null,
                             .is_comptime = false,
@@ -383,8 +383,7 @@ pub fn Interface(comptime Template: type) type {
 
         /// Cast an implementation vtable to the template's exact vtable struct type.
         pub fn castVTableToTemplate(comptime Implementation: type, vtable: VTableType(Implementation)) TemplateType {
-            comptime var tmpl_ti: reflect.TypeInfo = undefined;
-            tmpl_ti = comptime reflect.TypeInfo.from(TemplateType);
+            const tmpl_ti = reflect.TypeInfo.from(TemplateType);
             comptime if (tmpl_ti.category != .Struct) {
                 @compileError("castVTableToTemplate requires a struct Template type (vtable)");
             };
@@ -838,7 +837,7 @@ test "Interface - Allocator vtable" {
         base_allocator: std.mem.Allocator,
 
         const vtable = blk: {
-            @setEvalBranchQuota(5000);
+            @setEvalBranchQuota(2000);
             break :blk Interface(std.mem.Allocator.VTable).vTableAsTemplate(@This());
         };
 

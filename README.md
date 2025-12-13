@@ -85,7 +85,7 @@ const MyAllocator = struct {
     base_allocator: std.mem.Allocator,
 
     const vtable = blk: {
-        @setEvalBranchQuota(5000);
+        @setEvalBranchQuota(2000);
         break :blk Interface(std.mem.Allocator.VTable).vTableAsTemplate(@This());
     };
 

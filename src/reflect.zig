@@ -33,17 +33,34 @@ pub const ShallowTypeInfo = struct {
     type: type,
     name: []const u8,
     size: usize,
+    category: TypeInfo.Category,
 
     pub fn from(comptime T: type) ShallowTypeInfo {
         return ShallowTypeInfo{
             .type = T,
             .name = @typeName(T),
             .size = safeSizeOf(T),
+            .category = TypeInfo.Category.from(T),
         };
     }
 
-    pub fn isPointer(self: *const @This()) bool {
-        return @typeInfo(self.type) == .pointer;
+    fn fromVisited(comptime T: type, comptime visited: []const ReflectInfo) ShallowTypeInfo {
+        inline for (visited) |info| {
+            switch (info) {
+                .type => |ti| {
+                    if (ti.type == T) {
+                        return ShallowTypeInfo{
+                            .type = ti.type,
+                            .name = ti.name,
+                            .size = ti.size,
+                            .category = ti.category,
+                        };
+                    }
+                },
+                else => {},
+            }
+        }
+        return ShallowTypeInfo.from(T);
     }
 
     /// Get full TypeInfo for this type (computed lazily)
@@ -652,6 +669,7 @@ pub const TypeInfo = struct {
             .type = self.type,
             .name = self.name,
             .size = self.size,
+            .category = self.category,
         };
     }
 
@@ -688,7 +706,6 @@ pub const TypeInfo = struct {
     }
 
     fn buildFields(comptime T: type, comptime visited: []const ReflectInfo) []const FieldInfo {
-        _ = visited; // No longer needed since we don't recurse
         const type_info = @typeInfo(T);
         if (type_info != .@"struct") {
             return &[_]FieldInfo{};
@@ -713,8 +730,9 @@ pub const TypeInfo = struct {
                     .type = field.type,
                     .name = @typeName(field.type),
                     .size = field_size,
+                    .category = TypeInfo.Category.from(field.type),
                 },
-                .container_type = ShallowTypeInfo.from(T),
+                .container_type = ShallowTypeInfo.fromVisited(T, visited),
             };
             field_count += 1;
         }
@@ -847,7 +865,7 @@ fn toReflectInfo(comptime T: type, comptime visited: []const ReflectInfo) ?Refle
                             .name = @typeName(ErrType),
                             .size = @sizeOf(ErrType),
                         },
-                        .container_type = ShallowTypeInfo.from(T),
+                        .container_type = ShallowTypeInfo.fromVisited(T, visited),
                     };
                 }
                 ri.type.fields = field_infos[0..len];
