@@ -1,7 +1,5 @@
 const std = @import("std");
 
-pub const Unknown = ReflectInfo.unknown;
-
 pub inline fn typeHash(comptime T: type) u64 {
     return std.hash.Wyhash.hash(0, @typeName(T));
 }
