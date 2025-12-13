@@ -1210,7 +1210,9 @@ pub fn getSimpleTypeName(comptime T: type) []const u8 {
 fn simplifyTypeName(comptime type_name: []const u8) []const u8 {
     var last_dot: ?usize = null;
     inline for (type_name, 0..) |c, i| {
-        if (c == '.') last_dot = i;
+        if (c == '.') {
+            last_dot = i;
+        }
     }
 
     // If there's no dot, just return the original name.

@@ -31,6 +31,15 @@ pub fn Interface(comptime Template: type) type {
 
         /// Validates that a type satisfies this interface.
         pub fn validate(value: type) void {
+            validateThis(value, false);
+        }
+
+        /// Validates that a type satisfies this interface with verbose error messages.
+        pub fn validateVerbose(value: type) void {
+            validateThis(value, true);
+        }
+
+        fn validateThis(value: type, comptime verbose: bool) void {
             const Implementation = value;
 
             // switch (@typeInfo(Implementation)) {
@@ -106,7 +115,7 @@ pub fn Interface(comptime Template: type) type {
                         .type = tmpl_func_info.type,
                     };
                     if (impl_func_info == null) {
-                        missing_methods = missing_methods ++ &[_][]const u8{mixed_func_info.toString()};
+                        missing_methods = missing_methods ++ &[_][]const u8{mixed_func_info.toStringEx(false, !verbose)};
                     } else {
                         // Check if parameters match (handling self parameters)
                         var param_match = true;
@@ -200,13 +209,14 @@ pub fn Interface(comptime Template: type) type {
                         }
 
                         if (!param_match) {
-                            missing_methods = missing_methods ++ &[_][]const u8{mixed_func_info.toString()};
+                            missing_methods = missing_methods ++ &[_][]const u8{mixed_func_info.toStringEx(false, !verbose)};
                         }
                     }
                 }
 
                 if (missing_methods.len > 0) {
-                    var error_msg: []const u8 = "Implementation " ++ reflect.getSimpleTypeName(Implementation) ++ " does not satisfy interface " ++ reflect.getSimpleTypeName(Template) ++ ". ";
+                    var error_msg: []const u8 = "Implementation " ++ if (verbose == false) reflect.getSimpleTypeName(Implementation) else @typeName(Implementation) ++ " ";
+                    error_msg = error_msg ++ "does not satisfy interface " ++ if (verbose == false) reflect.getSimpleTypeName(Template) else @typeName(Template) ++ ". ";
 
                     error_msg = error_msg ++ "Missing methods:\n";
                     for (missing_methods) |method| {
@@ -750,4 +760,21 @@ test "Interface - function pointer parameter substitution" {
 
     const CallbackHolderImpl = Interface(CallbackHolder);
     CallbackHolderImpl.validate(MyHolder);
+}
+
+test "Interface - function pointer parameter substitution with self pointer" {
+    const Processor = struct {
+        pub fn process(self: *@This(), cb: fn (*std.mem.Allocator, u32) u32) u32 {
+            return cb(self, 0);
+        }
+    };
+
+    const MyProcessor = struct {
+        pub fn process(self: *@This(), cb: fn (*std.mem.Allocator, u32) u32) u32 {
+            return cb(self, 0);
+        }
+    };
+
+    const ProcessorImpl = Interface(Processor);
+    ProcessorImpl.validate(MyProcessor);
 }
