@@ -1,6 +1,6 @@
 # Mixin Code Generation
 
-> [!WARN]
+> [!WARNING]
 > Experimental
 
 The `codegen.mixin_generator` module provides true mixin behavior through compile-time code generation. The mixin generator creates actual Zig code where all methods are directly available.
