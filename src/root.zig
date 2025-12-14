@@ -31,6 +31,7 @@ pub const ShallowTypeInfo = reflect.ShallowTypeInfo;
 pub const Change = change.Change;
 
 pub const Interface = impl.Interface;
+pub const Interfaces = impl.Interfaces;
 
 // Funcs
 pub const getTypeInfo = reflect.getTypeInfo;

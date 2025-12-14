@@ -856,3 +856,31 @@ test "Interface - vTableAsTemplate" {
     const result = vt.doThing(&inst, 21);
     try std.testing.expectEqual(@as(u32, 42), result);
 }
+
+test "Interface - real world use case: Plugin system" {
+    const Plugin = struct {
+        pub inline fn name() []const u8 {
+            unreachable;
+        }
+        pub fn initialize(_: *@This()) void {
+            unreachable;
+        }
+    };
+
+    const MyPlugin = struct {
+        pub fn name() []const u8 {
+            return "MyPlugin";
+        }
+        pub fn initialize(_: *@This()) void {
+            // Initialization logic
+        }
+    };
+
+    const PluginImpl = Interface(Plugin);
+    PluginImpl.validate(MyPlugin);
+
+    const vt = PluginImpl.vTable(MyPlugin);
+    //var plugin_instance = MyPlugin{};
+    const plugin_name = vt.name();
+    try std.testing.expectEqualStrings("MyPlugin", plugin_name);
+}
