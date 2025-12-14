@@ -118,6 +118,21 @@ pub fn Interface(comptime Template: type) type {
             return interface;
         }
 
+        /// Create a interface instance from a pointer to a concrete implementation.
+        pub fn createPtr(comptime Implementation: type, inst: *Implementation) InterfaceType {
+            validate(Implementation);
+            const vtable = vTableAsTemplate(Implementation);
+            var interface: InterfaceType = undefined;
+            interface.ptr = @ptrCast(@alignCast(inst));
+            interface.vtable = vtable;
+
+            inline for (reflect.getTypeInfo(Template).getFuncNames()) |func_name| {
+                @field(interface, func_name) = @field(interface.vtable, func_name);
+            }
+
+            return interface;
+        }
+
         /// Validates that a type satisfies this interface.
         pub fn validate(value: type) void {
             validateThis(value, false);
@@ -1015,4 +1030,12 @@ test "Interface - stored vtable" {
     try std.testing.expectEqualStrings("MyPlugin", plugin_name);
     interface.initialize(interface.ptr);
     try std.testing.expect(interface.isInitialized(interface.ptr));
+
+    const impl = std.testing.allocator.create(MyPlugin) catch unreachable;
+    defer std.testing.allocator.destroy(impl);
+    const another_interface = PluginImpl.createPtr(MyPlugin, impl);
+    const another_plugin_name = another_interface.vtable.name();
+    try std.testing.expectEqualStrings("MyPlugin", another_plugin_name);
+    another_interface.initialize(another_interface.ptr);
+    try std.testing.expect(another_interface.isInitialized(another_interface.ptr));
 }
