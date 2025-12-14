@@ -30,8 +30,93 @@ const reflect = @import("reflect.zig");
 /// This continues the explicitness of Zig which should be a code guideline all follow in most cases.
 pub fn Interface(comptime Template: type) type {
     return struct {
-        pub const TemplateType = Template;
+        fn resolveTemplateType(comptime T: type) type {
+            const t_info = comptime reflect.getTypeInfo(T);
+            const func_names = t_info.getFuncNames();
+            if (func_names.len == 0) return T;
+
+            var fields: [func_names.len]std.builtin.Type.StructField = undefined;
+            for (func_names, 0..) |name, i| {
+                const func_info = t_info.getFunc(name);
+                if (func_info) |func| {
+                    const PtrType = @TypeOf(func.toPtr());
+                    fields[i] = .{
+                        .name = name[0..name.len :0],
+                        .type = PtrType,
+                        .default_value_ptr = null,
+                        .is_comptime = false,
+                        .alignment = @alignOf(PtrType),
+                    };
+                } else {
+                    @compileError("Template method info not found for " ++ name ++ " in " ++ reflect.getSimpleTypeName(T));
+                }
+            }
+
+            return @Type(.{ .@"struct" = .{
+                .layout = .auto,
+                .fields = &fields,
+                .decls = &.{},
+                .is_tuple = false,
+            } });
+        }
+
+        pub const TemplateType = resolveTemplateType(Template);
         pub const types: []const type = &[_]type{TemplateType};
+
+        pub const InterfaceType = blk: {
+            const func_names = reflect.getTypeInfo(Template).getFuncNames();
+            const field_count = func_names.len + 2;
+            var fields: [field_count]std.builtin.Type.StructField = undefined;
+
+            fields[0] = .{
+                .name = "ptr",
+                .type = *Template,
+                .default_value_ptr = null,
+                .is_comptime = false,
+                .alignment = @alignOf(*Template),
+            };
+
+            fields[1] = .{
+                .name = "vtable",
+                .type = TemplateType,
+                .default_value_ptr = null,
+                .is_comptime = false,
+                .alignment = @alignOf(TemplateType),
+            };
+
+            for (func_names, 0..) |func_name, i| {
+                const FieldType = @TypeOf(@field(@as(TemplateType, undefined), func_name));
+                fields[i + 2] = .{
+                    .name = func_name[0..func_name.len :0],
+                    .type = FieldType,
+                    .default_value_ptr = null,
+                    .is_comptime = false,
+                    .alignment = @alignOf(FieldType),
+                };
+            }
+
+            break :blk @Type(.{ .@"struct" = .{
+                .layout = .auto,
+                .fields = &fields,
+                .decls = &.{},
+                .is_tuple = false,
+            } });
+        };
+
+        /// Create an interface instance from a concrete implementation.
+        pub fn create(comptime Implementation: type, inst: Implementation) InterfaceType {
+            validate(Implementation);
+            const vtable = vTableAsTemplate(Implementation);
+            var interface: InterfaceType = undefined;
+            interface.ptr = @ptrCast(@constCast(&inst));
+            interface.vtable = vtable;
+
+            inline for (reflect.getTypeInfo(Template).getFuncNames()) |func_name| {
+                @field(interface, func_name) = @field(interface.vtable, func_name);
+            }
+
+            return interface;
+        }
 
         /// Validates that a type satisfies this interface.
         pub fn validate(value: type) void {
@@ -48,7 +133,7 @@ pub fn Interface(comptime Template: type) type {
 
             comptime {
                 const self_info = reflect.TypeInfo.from(@This());
-                const template_info = reflect.TypeInfo.from(TemplateType);
+                const template_info = reflect.TypeInfo.from(Template);
                 const impl_info = reflect.TypeInfo.from(Implementation);
                 const func_names = template_info.getFuncNames();
 
@@ -293,7 +378,8 @@ pub fn Interface(comptime Template: type) type {
 
         /// Get the struct type representing the vtable for a given implementation.
         fn VTableType(comptime Implementation: type) type {
-            const template_info = comptime reflect.getTypeInfo(TemplateType);
+            if (Implementation == TemplateType) return TemplateType;
+            const template_info = comptime reflect.getTypeInfo(Template);
             const impl_info = comptime reflect.getTypeInfo(Implementation);
             const func_names = template_info.getFuncNames();
             const tmpl_struct_fields = template_info.fields;
@@ -346,10 +432,10 @@ pub fn Interface(comptime Template: type) type {
             break :blk VTableType(Implementation);
         } {
             return comptime blk: {
-                const template_info = reflect.getTypeInfo(TemplateType);
+                const template_info = reflect.getTypeInfo(Template);
                 const impl_info = reflect.getTypeInfo(Implementation);
                 const func_names = template_info.getFuncNames();
-                const tmpl_struct_fields = @typeInfo(TemplateType).@"struct".fields;
+                const tmpl_struct_fields = template_info.fields;
                 const use_fields = func_names.len == 0;
 
                 var table: VTableType(Implementation) = undefined;
@@ -893,4 +979,40 @@ test "Interface - real world use case: Plugin system" {
     //var plugin_instance = MyPlugin{};
     const plugin_name = vt.name();
     try std.testing.expectEqualStrings("MyPlugin", plugin_name);
+}
+
+test "Interface - stored vtable" {
+    const Plugin = struct {
+        pub fn name() []const u8 {
+            unreachable;
+        }
+        pub fn initialize(_: *@This()) void {
+            unreachable;
+        }
+        pub fn isInitialized(_: *const @This()) bool {
+            unreachable;
+        }
+    };
+
+    const MyPlugin = struct {
+        initialized: bool = false,
+        pub fn name() []const u8 {
+            return "MyPlugin";
+        }
+        pub fn initialize(self: *@This()) void {
+            self.initialized = true;
+        }
+
+        pub fn isInitialized(self: *const @This()) bool {
+            return self.initialized;
+        }
+    };
+
+    const PluginImpl = Interface(Plugin);
+    PluginImpl.validate(MyPlugin);
+    const interface = PluginImpl.create(MyPlugin, .{});
+    const plugin_name = interface.vtable.name();
+    try std.testing.expectEqualStrings("MyPlugin", plugin_name);
+    interface.initialize(interface.ptr);
+    try std.testing.expect(interface.isInitialized(interface.ptr));
 }
