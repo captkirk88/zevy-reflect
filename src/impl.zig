@@ -291,7 +291,6 @@ pub fn Interface(comptime Template: type) type {
         }
 
         /// Get the struct type representing the vtable for a given implementation.
-        /// The fields correspond to the template's method names and hold typed function pointers.
         fn VTableType(comptime Implementation: type) type {
             const template_info = comptime reflect.getTypeInfo(TemplateType);
             const impl_info = comptime reflect.getTypeInfo(Implementation);
@@ -412,6 +411,58 @@ pub fn Interfaces(comptime InterfaceTypes: []const type) type {
             }
         }
 
+        fn _TemplateVTableType() type {
+            return comptime blk: {
+                var all_fields: []const std.builtin.Type.StructField = &.{};
+                for (InterfaceTypes) |Intf| {
+                    const template_info = reflect.getTypeInfo(Intf);
+                    const func_names = template_info.getFuncNames();
+                    const tmpl_struct_fields = template_info.fields;
+                    const use_fields = func_names.len == 0;
+
+                    const count = if (use_fields) tmpl_struct_fields.len else func_names.len;
+                    var fields: [count]std.builtin.Type.StructField = undefined;
+
+                    if (use_fields) {
+                        for (tmpl_struct_fields, 0..) |fld, i| {
+                            fields[i] = std.builtin.Type.StructField{
+                                .name = fld.name[0..fld.name.len :0],
+                                .type = fld.type.type,
+                                .default_value_ptr = null,
+                                .is_comptime = false,
+                                .alignment = fld.alignment,
+                            };
+                        }
+                    } else {
+                        for (func_names, 0..) |name, i| {
+                            const func_info = template_info.getFunc(name) orelse @compileError("Template method info not found");
+                            const PtrType = @TypeOf(func_info.toPtr());
+                            fields[i] = std.builtin.Type.StructField{
+                                .name = name[0..name.len :0],
+                                .type = PtrType,
+                                .default_value_ptr = null,
+                                .is_comptime = false,
+                                .alignment = @alignOf(PtrType),
+                            };
+                        }
+                    }
+
+                    all_fields = all_fields ++ &fields;
+                }
+
+                break :blk @Type(.{ .@"struct" = .{
+                    .layout = .auto,
+                    .fields = all_fields,
+                    .decls = &.{},
+                    .is_tuple = false,
+                } });
+            };
+        }
+
+        /// Combined template vtable type composed from the template
+        /// structs of each interface in this composition.
+        pub const TemplateVTableType = _TemplateVTableType();
+
         fn CombinedVTableType(comptime Implementation: type) type {
             return comptime blk: {
                 var all_fields: []const std.builtin.Type.StructField = &.{};
@@ -430,8 +481,6 @@ pub fn Interfaces(comptime InterfaceTypes: []const type) type {
         }
 
         /// Build and return a combined vtable instance for the implementation.
-        /// Note: For large numbers of interfaces (3+), this may hit eval branch quota limits
-        /// during vtable construction due to repeated validation and introspection.
         pub fn vTable(comptime Implementation: type) blk: {
             validate(Implementation);
             break :blk CombinedVTableType(Implementation);
@@ -613,6 +662,41 @@ test "Interfaces composition" {
     vt.update(&obj, 0.16);
     vt.destroy(&obj);
     try std.testing.expect(obj.updated);
+}
+
+test "Interfaces.TemplateVTable" {
+    const A = struct {
+        pub fn a(_: *@This()) void {
+            unreachable;
+        }
+    };
+    const B = struct {
+        pub fn b(_: *@This(), _: u32) void {
+            unreachable;
+        }
+    };
+
+    const Impl = struct {
+        value: u32 = 0,
+        pub fn a(self: *@This()) void {
+            _ = self;
+        }
+
+        pub fn b(self: *@This(), v: u32) void {
+            self.value += v;
+        }
+    };
+    _ = Impl;
+
+    const Comp = Interfaces(&[_]type{ A, B });
+    const vt = Comp.TemplateVTableType;
+    try std.testing.expectEqual(2, @typeInfo(vt).@"struct".fields.len);
+    const type_info = comptime reflect.getTypeInfo(Comp.TemplateVTableType);
+    std.debug.print("TemplateVTable Type:\n", .{});
+    std.debug.print("{s}\n", .{type_info.toStringEx(true)});
+    inline for (type_info.fields) |field| {
+        std.debug.print("Field: {s}, Type: {s}\n", .{ field.name, field.type.name });
+    }
 }
 
 test "Interface.extend hierarchical composition" {
@@ -844,14 +928,13 @@ test "Interface - vTableAsTemplate" {
     };
 
     const Impl = struct {
-        pub const vtable = Interface(VTable).vTableAsTemplate(@This());
         pub fn doThing(_: *@This(), value: u32) u32 {
             return value * 2;
         }
     };
 
     var inst = Impl{};
-    var vt = Impl.vtable;
+    var vt = Interface(VTable).vTableAsTemplate(Impl);
 
     const result = vt.doThing(&inst, 21);
     try std.testing.expectEqual(@as(u32, 42), result);

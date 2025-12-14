@@ -676,11 +676,6 @@ pub const TypeInfo = struct {
         return true;
     }
 
-    /// Check if this TypeInfo represents a pointer type
-    pub inline fn getCategory(self: *const TypeInfo) Category {
-        return self.category;
-    }
-
     /// Get a shallow version of this TypeInfo (no field details)
     pub inline fn toShallow(self: *const TypeInfo) ShallowTypeInfo {
         return ShallowTypeInfo{
@@ -1295,11 +1290,11 @@ pub fn getFields(comptime T: type) []const []const u8 {
 }
 
 /// Get the simple type name (without namespace/module prefixes)
-pub fn getSimpleTypeName(comptime T: type) []const u8 {
+pub inline fn getSimpleTypeName(comptime T: type) []const u8 {
     return simplifyTypeName(@typeName(T));
 }
 
-fn simplifyTypeName(comptime type_name: []const u8) []const u8 {
+inline fn simplifyTypeName(type_name: []const u8) []const u8 {
     var last_dot: ?usize = null;
     inline for (type_name, 0..) |c, i| {
         if (c == '.') {
@@ -1327,22 +1322,19 @@ fn simplifyTypeName(comptime type_name: []const u8) []const u8 {
     const idx = last_dot.?;
     if (prefix_end == 0) return type_name[idx + 1 ..];
 
-    // Build a new compile-time array combining the prefix and the simple name.
-    comptime {
-        const name_part = type_name[idx + 1 ..];
-        const out_len = prefix_end + name_part.len;
-        var out: [out_len]u8 = undefined;
-        var pos: usize = 0;
-        for (type_name[0..prefix_end]) |c| {
-            out[pos] = c;
-            pos += 1;
-        }
-        for (name_part) |c| {
-            out[pos] = c;
-            pos += 1;
-        }
-        return out[0..out_len];
+    const name_part = type_name[idx + 1 ..];
+    const out_len = prefix_end + name_part.len;
+    var out: [out_len]u8 = undefined;
+    var pos: usize = 0;
+    for (type_name[0..prefix_end]) |c| {
+        out[pos] = c;
+        pos += 1;
     }
+    for (name_part) |c| {
+        out[pos] = c;
+        pos += 1;
+    }
+    return out[0..out_len];
 }
 
 // ===== TESTS =====
