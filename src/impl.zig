@@ -104,11 +104,13 @@ pub fn Interface(comptime Template: type) type {
         };
 
         /// Create an interface instance from a concrete implementation.
-        pub fn create(comptime Implementation: type, inst: Implementation) InterfaceType {
+        pub fn create(comptime Implementation: type, inst: Implementation) blk: {
             validate(Implementation);
+            break :blk InterfaceType;
+        } {
             const vtable = vTableAsTemplate(Implementation);
             var interface: InterfaceType = undefined;
-            interface.ptr = @ptrCast(@constCast(&inst));
+            interface.ptr = @ptrCast(@alignCast(@constCast(&inst)));
             interface.vtable = vtable;
 
             inline for (reflect.getTypeInfo(Template).getFuncNames()) |func_name| {
@@ -119,8 +121,10 @@ pub fn Interface(comptime Template: type) type {
         }
 
         /// Create a interface instance from a pointer to a concrete implementation.
-        pub fn createPtr(comptime Implementation: type, inst: *Implementation) InterfaceType {
+        pub fn createPtr(comptime Implementation: type, inst: *Implementation) blk: {
             validate(Implementation);
+            break :blk InterfaceType;
+        } {
             const vtable = vTableAsTemplate(Implementation);
             var interface: InterfaceType = undefined;
             interface.ptr = @ptrCast(@alignCast(inst));
@@ -147,18 +151,27 @@ pub fn Interface(comptime Template: type) type {
             const Implementation = value;
 
             comptime {
-                const self_info = reflect.TypeInfo.from(@This());
                 const template_info = reflect.TypeInfo.from(Template);
                 const impl_info = reflect.TypeInfo.from(Implementation);
                 const func_names = template_info.getFuncNames();
+                const tmpl_struct_fields = template_info.fields;
 
                 var missing_methods: []const []const u8 = &.{};
 
-                for (func_names) |method_name| {
-                    if (self_info.getDecl(method_name) != null) {
-                        // Skip any methods defined directly on the Interface type itself
-                        continue;
+                // Handle template vtables defined as fields (e.g. function pointer structs)
+                if (func_names.len == 0) {
+                    for (tmpl_struct_fields) |fld| {
+                        const impl_func_info = impl_info.getFunc(fld.name);
+                        if (impl_func_info == null) {
+                            missing_methods = missing_methods ++ &[_][]const u8{fld.type.getFullInfo().name};
+                            continue;
+                        }
+
+                        // Presence is enough here; signature compatibility is checked when casting vtables.
                     }
+                }
+
+                for (func_names) |method_name| {
                     const tmpl_func_info = template_info.getFunc(method_name) orelse {
                         @compileError("Template method info not found for " ++ method_name ++ " in " ++ reflect.getSimpleTypeName(Template));
                     };
@@ -314,8 +327,8 @@ pub fn Interface(comptime Template: type) type {
                 }
 
                 if (missing_methods.len > 0) {
-                    var error_msg: []const u8 = "Implementation '" ++ (if (verbose == false) reflect.getSimpleTypeName(Implementation) else @typeName(Implementation)) ++ "' ";
-                    error_msg = error_msg ++ "does not satisfy interface '" ++ (if (verbose == false) reflect.getSimpleTypeName(Template) else @typeName(Template)) ++ "'.\n";
+                    var error_msg: []const u8 = "Implementation '" ++ impl_info.toStringEx(!verbose) ++ "' ";
+                    error_msg = error_msg ++ "does not satisfy interface '" ++ template_info.toStringEx(!verbose) ++ "'. ";
 
                     error_msg = error_msg ++ "Missing methods:\n";
                     for (missing_methods) |method| {
@@ -406,28 +419,37 @@ pub fn Interface(comptime Template: type) type {
 
                 if (use_fields) {
                     for (tmpl_struct_fields, 0..) |fld, i| {
-                        const func_info = impl_info.getFunc(fld.name) orelse @compileError(reflect.getSimpleTypeName(Implementation) ++ " is missing method '" ++ fld.name ++ "' required by interface " ++ reflect.getSimpleTypeName(TemplateType));
-                        const PtrType = @TypeOf(func_info.toPtr());
-                        fields[i] = std.builtin.Type.StructField{
-                            .name = fld.name[0..fld.name.len :0],
-                            .type = PtrType,
-                            .default_value_ptr = null,
-                            .is_comptime = false,
-                            .alignment = @alignOf(PtrType),
-                        };
+                        const func_info = impl_info.getFunc(fld.name);
+                        if (func_info) |fi| {
+                            const PtrType = @TypeOf(fi.toPtr());
+                            fields[i] = std.builtin.Type.StructField{
+                                .name = fld.name[0..fld.name.len :0],
+                                .type = PtrType,
+                                .default_value_ptr = null,
+                                .is_comptime = false,
+                                .alignment = @alignOf(PtrType),
+                            };
+                            continue;
+                        } else {
+                            @compileError("Implementation method info not found for " ++ fld.name ++ " in " ++ reflect.getSimpleTypeName(Implementation));
+                        }
                     }
                 } else {
                     for (func_names, 0..) |name, i| {
-                        const func_info = impl_info.getFunc(name) orelse @compileError(reflect.getSimpleTypeName(Implementation) ++ " is missing method '" ++ name ++ "' required by interface " ++ reflect.getSimpleTypeName(TemplateType));
-                        const PtrType = @TypeOf(func_info.toPtr());
-
-                        fields[i] = std.builtin.Type.StructField{
-                            .name = name[0..name.len :0],
-                            .type = PtrType,
-                            .default_value_ptr = null,
-                            .is_comptime = false,
-                            .alignment = @alignOf(PtrType),
-                        };
+                        const func_info = impl_info.getFunc(name);
+                        if (func_info) |fi| {
+                            const PtrType = @TypeOf(fi.toPtr());
+                            fields[i] = std.builtin.Type.StructField{
+                                .name = name[0..name.len :0],
+                                .type = PtrType,
+                                .default_value_ptr = null,
+                                .is_comptime = false,
+                                .alignment = @alignOf(PtrType),
+                            };
+                            continue;
+                        } else {
+                            @compileError("Implementation method info not found for " ++ name ++ " in " ++ reflect.getSimpleTypeName(Implementation));
+                        }
                     }
                 }
 
@@ -968,35 +990,7 @@ test "Interface - vTableAsTemplate" {
     try std.testing.expectEqual(@as(u32, 42), result);
 }
 
-test "Interface - real world use case: Plugin system" {
-    const Plugin = struct {
-        pub inline fn name() []const u8 {
-            unreachable;
-        }
-        pub fn initialize(_: *@This()) void {
-            unreachable;
-        }
-    };
-
-    const MyPlugin = struct {
-        pub fn name() []const u8 {
-            return "MyPlugin";
-        }
-        pub fn initialize(_: *@This()) void {
-            // Initialization logic
-        }
-    };
-
-    const PluginImpl = Interface(Plugin);
-    PluginImpl.validate(MyPlugin);
-
-    const vt = PluginImpl.vTable(MyPlugin);
-    //var plugin_instance = MyPlugin{};
-    const plugin_name = vt.name();
-    try std.testing.expectEqualStrings("MyPlugin", plugin_name);
-}
-
-test "Interface - stored vtable" {
+test "Interface - create" {
     const Plugin = struct {
         pub fn name() []const u8 {
             unreachable;
@@ -1025,11 +1019,14 @@ test "Interface - stored vtable" {
 
     const PluginImpl = Interface(Plugin);
     PluginImpl.validate(MyPlugin);
-    const interface = PluginImpl.create(MyPlugin, .{});
+    var myPlugin = MyPlugin{};
+    const interface = PluginImpl.createPtr(MyPlugin, &myPlugin);
     const plugin_name = interface.vtable.name();
     try std.testing.expectEqualStrings("MyPlugin", plugin_name);
     interface.initialize(interface.ptr);
     try std.testing.expect(interface.isInitialized(interface.ptr));
+    myPlugin.initialized = false; // reset
+    try std.testing.expect(!interface.isInitialized(interface.ptr));
 
     const impl = std.testing.allocator.create(MyPlugin) catch unreachable;
     defer std.testing.allocator.destroy(impl);

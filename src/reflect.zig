@@ -175,7 +175,7 @@ pub const FuncInfo = struct {
     type: ShallowTypeInfo,
 
     /// Create FuncInfo from a function type
-    fn from(comptime FuncType: type) ?FuncInfo {
+    pub inline fn from(comptime FuncType: type) ?FuncInfo {
         return comptime toFuncInfo(FuncType);
     }
 
@@ -403,15 +403,18 @@ pub const FuncInfo = struct {
             .type = ShallowTypeInfo.from(FuncType),
         } };
         pushVisited(stub_reflect);
-        if (zig_type_info == .optional) {
-            zig_type_info = @typeInfo(zig_type_info.optional.child);
+        switch (zig_type_info) {
+            .pointer => zig_type_info = @typeInfo(zig_type_info.pointer.child),
+            .optional => zig_type_info = @typeInfo(zig_type_info.optional.child),
+            .@"fn" => {},
+            else => {
+                @compileError(std.fmt.comptimePrint(
+                    "FuncInfo can only be created from function pointer types. {s} = {s}",
+                    .{ @tagName(zig_type_info), @typeName(FuncType) },
+                ));
+            },
         }
-        if (zig_type_info != .@"fn") {
-            @compileError(std.fmt.comptimePrint(
-                "FuncInfo can only be created from function types: {s}",
-                .{@typeName(FuncType)},
-            ));
-        }
+
         var param_infos: [zig_type_info.@"fn".params.len]ParamInfo = undefined;
         var valid_params: usize = 0;
         inline for (zig_type_info.@"fn".params, 0..) |param, i| {
@@ -703,11 +706,8 @@ pub const TypeInfo = struct {
     }
 
     fn getStringRepresentation(self: *const TypeInfo, simple_name: bool) []const u8 {
-        return std.fmt.comptimePrint("TypeInfo{{ name {s}, size: {d}, hash: {x}, category: {s}}}", .{
+        return std.fmt.comptimePrint("{s}", .{
             if (simple_name) simplifyTypeName(self.name) else self.name,
-            self.size,
-            self.hash,
-            @tagName(self.category),
         });
     }
 
