@@ -29,6 +29,7 @@ pub inline fn hashWithSeed(data: []const u8, seed: u64) u64 {
 
 /// Internal shared storage for visited reflect entries (comptime-only).
 fn visitedData() *[]const ReflectInfo {
+    @setEvalBranchQuota(5000);
     comptime var data: []const ReflectInfo = &[_]ReflectInfo{};
     return &data;
 }
@@ -60,28 +61,26 @@ pub const ShallowTypeInfo = struct {
     category: TypeInfo.Category,
 
     pub fn from(comptime T: type) ShallowTypeInfo {
-        const data = visitedData().*;
-        inline for (data) |info| {
-            switch (info) {
-                .type => |ti| {
-                    if (ti.type == T) {
-                        return ShallowTypeInfo{
-                            .type = ti.type,
-                            .name = ti.name,
-                            .size = ti.size,
-                            .category = ti.category,
-                        };
-                    }
-                },
-                else => {},
-            }
-        }
-        return ShallowTypeInfo{
+        if (lookupVisited(T)) |info| switch (info) {
+            .type => |ti| {
+                if (ti.type == T) {
+                    return ShallowTypeInfo{
+                        .type = ti.type,
+                        .name = ti.name,
+                        .size = ti.size,
+                        .category = ti.category,
+                    };
+                }
+            },
+            else => {},
+        };
+        const t = ShallowTypeInfo{
             .type = T,
             .name = @typeName(T),
             .size = safeSizeOf(T),
             .category = TypeInfo.Category.from(T),
         };
+        return t;
     }
 
     /// Get full TypeInfo for this type (computed lazily)
@@ -831,8 +830,6 @@ pub const ReflectInfo = union(enum) {
 
 fn toReflectInfo(comptime T: type) ?ReflectInfo {
     if (lookupVisited(T)) |cached| return cached;
-
-    @setEvalBranchQuota(3000);
 
     const type_info = @typeInfo(T);
 

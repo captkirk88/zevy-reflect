@@ -7,20 +7,23 @@ const reflect = @import("reflect.zig");
 /// Example:
 /// ```zig
 /// // Define your interfaces like you would in most programming languages
-/// pub const Drawable = struct {
-///     ptr: *anyopaque,
-///     pub fn draw(self: *@This()) void {
-///         self.ptr.draw();
+/// const VTable = struct {
+///     doThing: *const fn (self: *anyopaque, value: u32) u32,
+/// };
+///
+/// const Impl = struct {
+///     pub vtable = Interface(VTable).vTableAsTemplate(@This());
+///
+///     pub fn doThing(_: *@This(), value: u32) u32 {
+///         return value * 2;
 ///     }
 /// };
 ///
-/// pub const MyCircle = struct {
-///     radius: f32,
-///     pub fn draw(self: *@This()) void { ... }
-/// };
+/// const TraitImpl = Interface(VTable);
+/// var inst = Impl{};
 ///
 /// pub fn drawAll(drawable: anytype) void {
-///     Interface(Drawable).validate(drawable); // if not satisfied then compile error will be shown
+///     Impl.vtable.doThing(&drawable, 42); // if not satisfied then compile error will be shown
 /// }
 /// ```
 ///
@@ -42,19 +45,8 @@ pub fn Interface(comptime Template: type) type {
         fn validateThis(value: type, comptime verbose: bool) void {
             const Implementation = value;
 
-            // switch (@typeInfo(Implementation)) {
-            //     .pointer => {
-            //         validate(value.*);
-            //         return;
-            //     },
-            //     .optional => {
-            //         if (value != null) validate(value.?);
-            //         return;
-            //     },
-            //     else => {},
-            // }
-
             comptime {
+                const self_info = reflect.TypeInfo.from(@This());
                 const template_info = reflect.TypeInfo.from(TemplateType);
                 const impl_info = reflect.TypeInfo.from(Implementation);
                 const func_names = template_info.getFuncNames();
@@ -62,7 +54,13 @@ pub fn Interface(comptime Template: type) type {
                 var missing_methods: []const []const u8 = &.{};
 
                 for (func_names) |method_name| {
-                    const tmpl_func_info = template_info.getFunc(method_name).?;
+                    if (self_info.getDecl(method_name) != null) {
+                        // Skip any methods defined directly on the Interface type itself
+                        continue;
+                    }
+                    const tmpl_func_info = template_info.getFunc(method_name) orelse {
+                        @compileError("Template method info not found for " ++ method_name ++ " in " ++ reflect.getSimpleTypeName(Template));
+                    };
                     const impl_func_info = impl_info.getFunc(method_name);
 
                     var func_params: [tmpl_func_info.params.len]reflect.ParamInfo = undefined;
@@ -215,8 +213,8 @@ pub fn Interface(comptime Template: type) type {
                 }
 
                 if (missing_methods.len > 0) {
-                    var error_msg: []const u8 = "Implementation " ++ if (verbose == false) reflect.getSimpleTypeName(Implementation) else @typeName(Implementation) ++ " ";
-                    error_msg = error_msg ++ "does not satisfy interface " ++ if (verbose == false) reflect.getSimpleTypeName(Template) else @typeName(Template) ++ ". ";
+                    var error_msg: []const u8 = "Implementation '" ++ (if (verbose == false) reflect.getSimpleTypeName(Implementation) else @typeName(Implementation)) ++ "' ";
+                    error_msg = error_msg ++ "does not satisfy interface '" ++ (if (verbose == false) reflect.getSimpleTypeName(Template) else @typeName(Template)) ++ "'.\n";
 
                     error_msg = error_msg ++ "Missing methods:\n";
                     for (missing_methods) |method| {
@@ -343,11 +341,11 @@ pub fn Interface(comptime Template: type) type {
 
         /// Build and return a vtable instance for the implementation. This both validates
         /// the implementation and provides typed function pointers grouped by template methods.
-        pub fn vTable(comptime Implementation: type) VTableType(Implementation) {
+        pub fn vTable(comptime Implementation: type) blk: {
+            validate(Implementation);
+            break :blk VTableType(Implementation);
+        } {
             return comptime blk: {
-                // Reuse validation to ensure the implementation matches the template contract.
-                validate(Implementation);
-
                 const template_info = reflect.getTypeInfo(TemplateType);
                 const impl_info = reflect.getTypeInfo(Implementation);
                 const func_names = template_info.getFuncNames();
@@ -382,7 +380,7 @@ pub fn Interface(comptime Template: type) type {
         }
 
         /// Cast an implementation vtable to the template's exact vtable struct type.
-        pub fn castVTableToTemplate(comptime Implementation: type, vtable: VTableType(Implementation)) TemplateType {
+        fn castVTableToTemplate(comptime Implementation: type, vtable: VTableType(Implementation)) TemplateType {
             const tmpl_ti = reflect.TypeInfo.from(TemplateType);
             comptime if (tmpl_ti.category != .Struct) {
                 @compileError("castVTableToTemplate requires a struct Template type (vtable)");
@@ -416,7 +414,6 @@ pub fn Interfaces(comptime InterfaceTypes: []const type) type {
 
         fn CombinedVTableType(comptime Implementation: type) type {
             return comptime blk: {
-                validate(Implementation);
                 var all_fields: []const std.builtin.Type.StructField = &.{};
                 for (InterfaceTypes) |Intf| {
                     const VT = Interface(Intf).VTableType(Implementation);
@@ -435,14 +432,16 @@ pub fn Interfaces(comptime InterfaceTypes: []const type) type {
         /// Build and return a combined vtable instance for the implementation.
         /// Note: For large numbers of interfaces (3+), this may hit eval branch quota limits
         /// during vtable construction due to repeated validation and introspection.
-        pub fn vTable(comptime Implementation: type) CombinedVTableType(Implementation) {
+        pub fn vTable(comptime Implementation: type) blk: {
+            validate(Implementation);
+            break :blk CombinedVTableType(Implementation);
+        } {
             return comptime blk: {
-                validate(Implementation);
                 var table: CombinedVTableType(Implementation) = undefined;
                 for (InterfaceTypes) |Intf| {
                     const vt = Interface(Intf).vTable(Implementation);
-                    const vt_info = @typeInfo(@TypeOf(vt));
-                    for (vt_info.@"struct".fields) |field| {
+                    const vt_info = reflect.getTypeInfo(@TypeOf(vt));
+                    for (vt_info.fields) |field| {
                         @field(table, field.name) = @field(vt, field.name);
                     }
                 }
@@ -450,19 +449,19 @@ pub fn Interfaces(comptime InterfaceTypes: []const type) type {
             };
         }
 
-        pub fn vTableAsTemplate(comptime Implementation: type) InterfaceTypes[0] {
+        pub fn vTableAsTemplate(comptime Implementation: type, index: usize) InterfaceTypes[index] {
             const vt = vTable(Implementation);
-            return castVTableToTemplate(Implementation, vt);
+            return castVTableToTemplate(Implementation, index, vt);
         }
 
-        pub fn castVTableToTemplate(comptime Implementation: type, vtable: CombinedVTableType(Implementation)) type {
-            const first_intf = InterfaceTypes[0];
-            const tmpl_ti = reflect.TypeInfo.from(first_intf);
+        fn castVTableToTemplate(comptime Implementation: type, index: usize, vtable: CombinedVTableType(Implementation)) type {
+            const interface_ = InterfaceTypes[index];
+            const tmpl_ti = reflect.TypeInfo.from(interface_);
             comptime if (tmpl_ti.category != .Struct) {
                 @compileError("castVTableToTemplate requires a struct Template type (vtable)");
             };
 
-            var out: first_intf = undefined;
+            var out: interface_ = undefined;
             inline for (tmpl_ti.fields) |field| {
                 const FieldType = field.type.type;
                 const src_field = @field(vtable, field.name);
@@ -494,8 +493,7 @@ test "Interface - missing required method fails compilation" {
     // // This should not compile - missing 'draw' method
     // const DrawableImpl = Interface(Drawable);
 
-    // const badShape = BadShape{};
-    // DrawableImpl.validate(badShape);
+    // DrawableImpl.validate(BadShape);
 }
 
 test "Interface - reusable validator" {
@@ -672,15 +670,15 @@ test "Interface.extend hierarchical composition" {
     // Validate works
     FullGameObject.validate(GameObject);
 
-    // TODO: vTable construction hits eval branch quota with 3+ interfaces
-    // const vt2 = FullGameObject.vTable(GameObject);
-    // var obj2 = GameObject{};
-    // vt2.draw(&obj2);
-    // vt2.update(&obj2, 0.16);
-    // vt2.destroy(&obj2);
-    // try std.testing.expect(obj2.drawn);
-    // try std.testing.expect(obj2.updated);
-    // try std.testing.expect(obj2.destroyed);
+    // T-O-D-O: (OLD and fixed!) vTable construction hits eval branch quota with 3+ interfaces
+    const vt2 = FullGameObject.vTable(GameObject);
+    var obj2 = GameObject{};
+    vt2.draw(&obj2);
+    vt2.update(&obj2, 0.16);
+    vt2.destroy(&obj2);
+    try std.testing.expect(obj2.drawn);
+    try std.testing.expect(obj2.updated);
+    try std.testing.expect(obj2.destroyed);
 }
 
 test "Const-correct interfaces" {
@@ -846,14 +844,14 @@ test "Interface - vTableAsTemplate" {
     };
 
     const Impl = struct {
+        pub const vtable = Interface(VTable).vTableAsTemplate(@This());
         pub fn doThing(_: *@This(), value: u32) u32 {
             return value * 2;
         }
     };
 
-    const TraitImpl = Interface(VTable);
     var inst = Impl{};
-    var vt = TraitImpl.vTableAsTemplate(Impl);
+    var vt = Impl.vtable;
 
     const result = vt.doThing(&inst, 21);
     try std.testing.expectEqual(@as(u32, 42), result);

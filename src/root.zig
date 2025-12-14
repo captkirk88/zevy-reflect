@@ -12,6 +12,14 @@ pub const codegen = struct {
     pub const mixin_generator = @import("codegen/mixin_generator.zig");
 };
 
+/// Common interfaces
+pub const interfaces = struct {
+    const common = @import("common_interfaces.zig");
+    pub const Equal = common.Equal;
+    pub const Hashable = common.Hashable;
+    pub const Comparable = common.Comparable;
+};
+
 // Types
 pub const ReflectInfo = reflect.ReflectInfo;
 pub const TypeInfo = reflect.TypeInfo;
