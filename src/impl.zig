@@ -31,6 +31,7 @@ const reflect = @import("reflect.zig");
 pub fn Interface(comptime Template: type) type {
     return struct {
         pub const TemplateType = Template;
+        pub const types: []const type = &[_]type{TemplateType};
 
         /// Validates that a type satisfies this interface.
         pub fn validate(value: type) void {
@@ -399,128 +400,53 @@ pub fn Interface(comptime Template: type) type {
 }
 
 pub fn Interfaces(comptime InterfaceTypes: []const type) type {
-    return struct {
-        pub const types: []const type = InterfaceTypes;
+    const CombinedTemplate = comptime blk: {
+        var all_fields: []const std.builtin.Type.StructField = &.{};
+        for (InterfaceTypes) |Intf| {
+            const template_info = reflect.getTypeInfo(Intf);
+            const func_names = template_info.getFuncNames();
+            const tmpl_struct_fields = template_info.fields;
+            const use_fields = func_names.len == 0;
 
-        /// Validates that a type satisfies all interfaces in this composition.
-        pub fn validate(value: type) void {
-            comptime {
-                for (InterfaceTypes) |InterfaceType| {
-                    Interface(InterfaceType).validate(value);
+            const count = if (use_fields) tmpl_struct_fields.len else func_names.len;
+            var fields: [count]std.builtin.Type.StructField = undefined;
+
+            if (use_fields) {
+                for (tmpl_struct_fields, 0..) |fld, i| {
+                    fields[i] = std.builtin.Type.StructField{
+                        .name = fld.name[0..fld.name.len :0],
+                        .type = fld.type.type,
+                        .default_value_ptr = null,
+                        .is_comptime = false,
+                        .alignment = @alignOf(fld.type.type),
+                    };
+                }
+            } else {
+                for (func_names, 0..) |name, i| {
+                    const func_info = template_info.getFunc(name) orelse @compileError("Template method info not found");
+                    const PtrType = @TypeOf(func_info.toPtr());
+                    fields[i] = std.builtin.Type.StructField{
+                        .name = name[0..name.len :0],
+                        .type = PtrType,
+                        .default_value_ptr = null,
+                        .is_comptime = false,
+                        .alignment = @alignOf(PtrType),
+                    };
                 }
             }
+
+            all_fields = all_fields ++ &fields;
         }
 
-        fn _TemplateVTableType() type {
-            return comptime blk: {
-                var all_fields: []const std.builtin.Type.StructField = &.{};
-                for (InterfaceTypes) |Intf| {
-                    const template_info = reflect.getTypeInfo(Intf);
-                    const func_names = template_info.getFuncNames();
-                    const tmpl_struct_fields = template_info.fields;
-                    const use_fields = func_names.len == 0;
-
-                    const count = if (use_fields) tmpl_struct_fields.len else func_names.len;
-                    var fields: [count]std.builtin.Type.StructField = undefined;
-
-                    if (use_fields) {
-                        for (tmpl_struct_fields, 0..) |fld, i| {
-                            fields[i] = std.builtin.Type.StructField{
-                                .name = fld.name[0..fld.name.len :0],
-                                .type = fld.type.type,
-                                .default_value_ptr = null,
-                                .is_comptime = false,
-                                .alignment = fld.alignment,
-                            };
-                        }
-                    } else {
-                        for (func_names, 0..) |name, i| {
-                            const func_info = template_info.getFunc(name) orelse @compileError("Template method info not found");
-                            const PtrType = @TypeOf(func_info.toPtr());
-                            fields[i] = std.builtin.Type.StructField{
-                                .name = name[0..name.len :0],
-                                .type = PtrType,
-                                .default_value_ptr = null,
-                                .is_comptime = false,
-                                .alignment = @alignOf(PtrType),
-                            };
-                        }
-                    }
-
-                    all_fields = all_fields ++ &fields;
-                }
-
-                break :blk @Type(.{ .@"struct" = .{
-                    .layout = .auto,
-                    .fields = all_fields,
-                    .decls = &.{},
-                    .is_tuple = false,
-                } });
-            };
-        }
-
-        /// Combined template vtable type composed from the template
-        /// structs of each interface in this composition.
-        pub const TemplateVTableType = _TemplateVTableType();
-
-        fn CombinedVTableType(comptime Implementation: type) type {
-            return comptime blk: {
-                var all_fields: []const std.builtin.Type.StructField = &.{};
-                for (InterfaceTypes) |Intf| {
-                    const VT = Interface(Intf).VTableType(Implementation);
-                    const vt_info = @typeInfo(VT);
-                    all_fields = all_fields ++ vt_info.@"struct".fields;
-                }
-                break :blk @Type(.{ .@"struct" = .{
-                    .layout = .auto,
-                    .fields = all_fields,
-                    .decls = &.{},
-                    .is_tuple = false,
-                } });
-            };
-        }
-
-        /// Build and return a combined vtable instance for the implementation.
-        pub fn vTable(comptime Implementation: type) blk: {
-            validate(Implementation);
-            break :blk CombinedVTableType(Implementation);
-        } {
-            return comptime blk: {
-                var table: CombinedVTableType(Implementation) = undefined;
-                for (InterfaceTypes) |Intf| {
-                    const vt = Interface(Intf).vTable(Implementation);
-                    const vt_info = reflect.getTypeInfo(@TypeOf(vt));
-                    for (vt_info.fields) |field| {
-                        @field(table, field.name) = @field(vt, field.name);
-                    }
-                }
-                break :blk table;
-            };
-        }
-
-        pub fn vTableAsTemplate(comptime Implementation: type, index: usize) InterfaceTypes[index] {
-            const vt = vTable(Implementation);
-            return castVTableToTemplate(Implementation, index, vt);
-        }
-
-        fn castVTableToTemplate(comptime Implementation: type, index: usize, vtable: CombinedVTableType(Implementation)) type {
-            const interface_ = InterfaceTypes[index];
-            const tmpl_ti = reflect.TypeInfo.from(interface_);
-            comptime if (tmpl_ti.category != .Struct) {
-                @compileError("castVTableToTemplate requires a struct Template type (vtable)");
-            };
-
-            var out: interface_ = undefined;
-            inline for (tmpl_ti.fields) |field| {
-                const FieldType = field.type.type;
-                const src_field = @field(vtable, field.name);
-                const casted: FieldType = @ptrCast(src_field);
-                @field(out, field.name) = casted;
-            }
-
-            return out;
-        }
+        break :blk @Type(.{ .@"struct" = .{
+            .layout = .auto,
+            .fields = all_fields,
+            .decls = &.{},
+            .is_tuple = false,
+        } });
     };
+
+    return Interface(CombinedTemplate);
 }
 
 // ===== TESTS =====
@@ -689,9 +615,9 @@ test "Interfaces.TemplateVTable" {
     _ = Impl;
 
     const Comp = Interfaces(&[_]type{ A, B });
-    const vt = Comp.TemplateVTableType;
+    const vt = Comp.TemplateType;
     try std.testing.expectEqual(2, @typeInfo(vt).@"struct".fields.len);
-    const type_info = comptime reflect.getTypeInfo(Comp.TemplateVTableType);
+    const type_info = comptime reflect.getTypeInfo(Comp.TemplateType);
     std.debug.print("TemplateVTable Type:\n", .{});
     std.debug.print("{s}\n", .{type_info.toStringEx(true)});
     inline for (type_info.fields) |field| {
@@ -738,7 +664,8 @@ test "Interface.extend hierarchical composition" {
     };
 
     // Extend Drawable with Updatable
-    const DrawableUpdatable = Interfaces(&[_]type{ Drawable, Updatable });
+    const DrawableUpdatableTypes = &[_]type{ Drawable, Updatable };
+    const DrawableUpdatable = Interfaces(DrawableUpdatableTypes);
     const vt = DrawableUpdatable.vTable(GameObject);
 
     var obj = GameObject{};
@@ -749,7 +676,7 @@ test "Interface.extend hierarchical composition" {
     try std.testing.expect(obj.updated);
 
     // Further extend with Destroyable - this creates Interfaces with 3 types
-    const FullGameObject = Interfaces(DrawableUpdatable.types ++ &[_]type{Destroyable});
+    const FullGameObject = Interfaces(DrawableUpdatableTypes ++ &[_]type{Destroyable});
 
     // Validate works
     FullGameObject.validate(GameObject);

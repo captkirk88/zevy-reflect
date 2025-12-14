@@ -604,7 +604,7 @@ pub const TypeInfo = struct {
         if (lookupVisited(T)) |info| {
             switch (info) {
                 .type => |ti| return ti,
-                else => @compileError("TypeInfo.from cycle detected but found non-type ReflectInfo"),
+                else => {},
             }
         }
 
