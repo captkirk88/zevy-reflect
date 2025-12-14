@@ -81,55 +81,22 @@ Notes:
 `Interface(Template)` provides a compile-time validator and a typed vtable generator. Useful when you want an explicit interface and a vtable for dynamic dispatch.
 
 ```zig
-const MyAllocator = struct {
-    base_allocator: std.mem.Allocator,
+const VTable = struct {
+    doThing: *const fn (self: *anyopaque, value: u32) u32,
+};
 
-    const vtable = Interface(std.mem.Allocator.VTable).vTableAsTemplate(@This());
-
-    pub fn init(allc: std.mem.Allocator) @This() {
-        return .{ .base_allocator = allc };
-    }
-    pub fn alloc(self: *@This(), len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
-        _ = alignment; // base allocator handles default alignment for u8
-        _ = ret_addr;
-        const buf = self.base_allocator.alloc(u8, len) catch return null;
-        return buf.ptr;
-    }
-
-    pub fn free(self: *@This(), buf: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
-        _ = alignment;
-        _ = ret_addr;
-        self.base_allocator.free(buf);
-    }
-
-    pub fn resize(self: *@This(), buf: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
-        _ = alignment;
-        _ = ret_addr;
-        return self.base_allocator.resize(buf, new_len);
-    }
-
-    pub fn remap(self: *@This(), buf: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
-        _ = alignment;
-        _ = ret_addr;
-        const res = self.base_allocator.remap(buf, new_len) orelse return null;
-        return res.ptr;
-    }
-
-    pub fn allocator(self: *@This()) std.mem.Allocator {
-        return .{
-            .ptr = self,
-            .vtable = &vtable,
-        };
+const Impl = struct {
+    pub fn doThing(_: *@This(), value: u32) u32 {
+        return value * 2;
     }
 };
 
-var myAllocator = MyAllocator.init(std.heap.page_allocator);
-const allocator = myAllocator.allocator();
-// Verify we produced a valid vtable pointer matching the template type.
-std.debug.assert(@intFromPtr(allocator.vtable) != 0);
-const buf = try allocator.alloc(u8, 128);
-defer allocator.free(buf);
-std.debug.assert(buf.len == 128);
+const TraitImpl = Interface(VTable);
+var inst = Impl{};
+var vt = TraitImpl.vTableAsTemplate(Impl);
+
+const result = vt.doThing(&inst, 21);
+std.debug.assert(result == 42); // The answer to life, the universe, and everything
 ```
 
 Notes:

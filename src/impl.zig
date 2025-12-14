@@ -307,7 +307,7 @@ pub fn Interface(comptime Template: type) type {
 
                 if (use_fields) {
                     for (tmpl_struct_fields, 0..) |fld, i| {
-                        const func_info = impl_info.getFunc(fld.name) orelse @compileError("Implementation missing method: " ++ fld.name);
+                        const func_info = impl_info.getFunc(fld.name) orelse @compileError(reflect.getSimpleTypeName(Implementation) ++ " is missing method '" ++ fld.name ++ "' required by interface " ++ reflect.getSimpleTypeName(TemplateType));
                         const PtrType = @TypeOf(func_info.toPtr());
                         fields[i] = std.builtin.Type.StructField{
                             .name = fld.name[0..fld.name.len :0],
@@ -319,7 +319,7 @@ pub fn Interface(comptime Template: type) type {
                     }
                 } else {
                     for (func_names, 0..) |name, i| {
-                        const func_info = impl_info.getFunc(name).?;
+                        const func_info = impl_info.getFunc(name) orelse @compileError(reflect.getSimpleTypeName(Implementation) ++ " is missing method '" ++ name ++ "' required by interface " ++ reflect.getSimpleTypeName(TemplateType));
                         const PtrType = @TypeOf(func_info.toPtr());
 
                         fields[i] = std.builtin.Type.StructField{
@@ -357,12 +357,12 @@ pub fn Interface(comptime Template: type) type {
                 var table: VTableType(Implementation) = undefined;
                 if (use_fields) {
                     for (tmpl_struct_fields) |fld| {
-                        const func_info = impl_info.getFunc(fld.name) orelse @compileError("Implementation missing method: " ++ fld.name);
+                        const func_info = impl_info.getFunc(fld.name) orelse continue;
                         @field(table, fld.name) = func_info.toPtr();
                     }
                 } else {
                     for (func_names) |name| {
-                        const func_info = impl_info.getFunc(name).?;
+                        const func_info = impl_info.getFunc(name) orelse continue;
                         @field(table, name) = func_info.toPtr();
                     }
                 }
@@ -395,81 +395,16 @@ pub fn Interface(comptime Template: type) type {
                 const casted: FieldType = @ptrCast(src_field);
                 @field(out, field.name) = casted;
             }
+
             return out;
-        }
-
-        /// Extend this interface with additional requirements from another template.
-        /// Returns a new interface that requires both sets of methods.
-        pub fn Extend(comptime Extension: type) type {
-            return struct {
-                pub const BaseType = Template;
-                pub const ExtensionType = Extension;
-
-                /// Validates that a type satisfies both the base and extension interfaces.
-                pub fn validate(value: type) void {
-                    comptime {
-                        Interface(Template).validate(value);
-                        Interface(Extension).validate(value);
-                    }
-                }
-
-                fn CombinedVTableType(comptime Implementation: type) type {
-                    return comptime blk: {
-                        @This().validate(Implementation);
-                        const base_vt_type = Interface(Template).VTableType(Implementation);
-                        const ext_vt_type = Interface(Extension).VTableType(Implementation);
-
-                        const base_info = @typeInfo(base_vt_type);
-                        const ext_info = @typeInfo(ext_vt_type);
-
-                        var all_fields: []const std.builtin.Type.StructField = &.{};
-                        all_fields = all_fields ++ base_info.@"struct".fields;
-                        all_fields = all_fields ++ ext_info.@"struct".fields;
-
-                        break :blk @Type(.{ .@"struct" = .{
-                            .layout = .auto,
-                            .fields = all_fields,
-                            .decls = &.{},
-                            .is_tuple = false,
-                        } });
-                    };
-                }
-
-                /// Build and return a combined vtable instance for the implementation.
-                pub fn vTable(comptime Implementation: type) CombinedVTableType(Implementation) {
-                    return comptime blk: {
-                        @This().validate(Implementation);
-                        var table: CombinedVTableType(Implementation) = undefined;
-
-                        const base_vt = Interface(Template).vTable(Implementation);
-                        const base_vt_info = @typeInfo(@TypeOf(base_vt));
-                        for (base_vt_info.@"struct".fields) |field| {
-                            @field(table, field.name) = @field(base_vt, field.name);
-                        }
-
-                        const ext_vt = Interface(Extension).vTable(Implementation);
-                        const ext_vt_info = @typeInfo(@TypeOf(ext_vt));
-                        for (ext_vt_info.@"struct".fields) |field| {
-                            @field(table, field.name) = @field(ext_vt, field.name);
-                        }
-
-                        break :blk table;
-                    };
-                }
-
-                /// Extend this interface further with another template.
-                ///
-                /// *Caution: More than 3+ interfaces hits default branch quota. Extend with `@setEvalBranchQuota` if needed.*
-                pub fn extend(comptime MoreExtension: type) type {
-                    return Interfaces(&[_]type{ Template, Extension, MoreExtension });
-                }
-            };
         }
     };
 }
 
 pub fn Interfaces(comptime InterfaceTypes: []const type) type {
     return struct {
+        pub const types: []const type = InterfaceTypes;
+
         /// Validates that a type satisfies all interfaces in this composition.
         pub fn validate(value: type) void {
             comptime {
@@ -513,6 +448,29 @@ pub fn Interfaces(comptime InterfaceTypes: []const type) type {
                 }
                 break :blk table;
             };
+        }
+
+        pub fn vTableAsTemplate(comptime Implementation: type) InterfaceTypes[0] {
+            const vt = vTable(Implementation);
+            return castVTableToTemplate(Implementation, vt);
+        }
+
+        pub fn castVTableToTemplate(comptime Implementation: type, vtable: CombinedVTableType(Implementation)) type {
+            const first_intf = InterfaceTypes[0];
+            const tmpl_ti = reflect.TypeInfo.from(first_intf);
+            comptime if (tmpl_ti.category != .Struct) {
+                @compileError("castVTableToTemplate requires a struct Template type (vtable)");
+            };
+
+            var out: first_intf = undefined;
+            inline for (tmpl_ti.fields) |field| {
+                const FieldType = field.type.type;
+                const src_field = @field(vtable, field.name);
+                const casted: FieldType = @ptrCast(src_field);
+                @field(out, field.name) = casted;
+            }
+
+            return out;
         }
     };
 }
@@ -698,7 +656,7 @@ test "Interface.extend hierarchical composition" {
     };
 
     // Extend Drawable with Updatable
-    const DrawableUpdatable = Interface(Drawable).Extend(Updatable);
+    const DrawableUpdatable = Interfaces(&[_]type{ Drawable, Updatable });
     const vt = DrawableUpdatable.vTable(GameObject);
 
     var obj = GameObject{};
@@ -709,7 +667,7 @@ test "Interface.extend hierarchical composition" {
     try std.testing.expect(obj.updated);
 
     // Further extend with Destroyable - this creates Interfaces with 3 types
-    const FullGameObject = DrawableUpdatable.extend(Destroyable);
+    const FullGameObject = Interfaces(DrawableUpdatable.types ++ &[_]type{Destroyable});
 
     // Validate works
     FullGameObject.validate(GameObject);
@@ -756,7 +714,7 @@ test "Const-correct interfaces" {
         }
     };
 
-    const ReaderWriter = ReaderImpl.Extend(Writer); // or use Interfaces(&[_]type{Reader, Writer})
+    const ReaderWriter = Interfaces(&[_]type{ Reader, Writer }); // or use Interfaces(&[_]type{Reader, Writer})
     const rw_vt = ReaderWriter.vTable(Buffer);
     rw_vt.write(&buf, 456);
     const new_result = rw_vt.read(&buf);
@@ -797,9 +755,8 @@ test "Const-correct interfaces - mutable implementation allowed for const templa
 
 test "Interface - function pointer parameter substitution" {
     const CallbackHolder = struct {
-        pub fn setCallback(self: *@This(), cb: fn (*@This()) void) void {
-            _ = self;
-            _ = cb;
+        pub fn setCallback(_: *@This(), _: fn (*@This()) void) void {
+            unreachable;
         }
     };
 
@@ -835,9 +792,7 @@ test "Interface - Allocator vtable" {
     const MyAllocator = struct {
         base_allocator: std.mem.Allocator,
 
-        const vtable = blk: {
-            break :blk Interface(std.mem.Allocator.VTable).vTableAsTemplate(@This());
-        };
+        const vtable = Interface(std.mem.Allocator.VTable).vTableAsTemplate(@This());
 
         pub fn init(allc: std.mem.Allocator) @This() {
             return .{ .base_allocator = allc };
@@ -883,4 +838,23 @@ test "Interface - Allocator vtable" {
     const buf = try allocator.alloc(u8, 128);
     defer allocator.free(buf);
     try std.testing.expect(buf.len == 128);
+}
+
+test "Interface - vTableAsTemplate" {
+    const VTable = struct {
+        doThing: *const fn (self: *anyopaque, value: u32) u32,
+    };
+
+    const Impl = struct {
+        pub fn doThing(_: *@This(), value: u32) u32 {
+            return value * 2;
+        }
+    };
+
+    const TraitImpl = Interface(VTable);
+    var inst = Impl{};
+    var vt = TraitImpl.vTableAsTemplate(Impl);
+
+    const result = vt.doThing(&inst, 21);
+    try std.testing.expectEqual(@as(u32, 42), result);
 }
