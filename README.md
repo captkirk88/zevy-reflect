@@ -78,31 +78,9 @@ Notes:
 
 ### Interface Validation and VTable
 
-`Interface(Template)` provides a compile-time validator and a typed vtable generator. Useful when you want an explicit interface and a vtable for dynamic dispatch.
+`Template(...)` provides a compile-time validator and a typed vtable generator. Useful when you want an explicit interface and a vtable for dynamic dispatch. You can also obtain a convenience bound interface instance with `Template.interface(ImplType, &instance)`.
 
-```zig
-const VTable = struct {
-    doThing: *const fn (self: *anyopaque, value: u32) u32,
-};
-
-const Impl = struct {
-    pub fn doThing(_: *@This(), value: u32) u32 {
-        return value * 2;
-    }
-};
-
-const TraitImpl = Interface(VTable);
-var inst = Impl{};
-var vt = TraitImpl.vTableAsTemplate(Impl);
-
-const result = vt.doThing(&inst, 21);
-std.debug.assert(result == 42); // The answer to life, the universe, and everything
-```
-
-Notes:
-- `validate` checks method names and signatures (including handling `self`), emitting clear compile-time errors when mismatched.
-- `vTable` returns a compile-time constructed struct of function pointers matching the template methods.
-- `extend` allows adding another interface to create composite interfaces.
+See [common_interfaces.zig](src/common_interfaces.zig) for a examples.
 
 ### Change Detection
 

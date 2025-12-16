@@ -1,6 +1,12 @@
 const std = @import("std");
 const reflect = @import("reflect.zig");
 
+/// Return the concrete Interface type for a given template. This is a convenience wrapper
+/// so `Interface(SomeTemplate)` produces the interface type (the struct with `ptr`and `vtable`).
+pub inline fn Interface(comptime T: type) type {
+    return Template(T)._Interface;
+}
+
 /// Creates an interface validator from a template type.
 /// Returns a type that can validate and constrain implementations.
 ///
@@ -12,14 +18,14 @@ const reflect = @import("reflect.zig");
 /// };
 ///
 /// const Impl = struct {
-///     pub vtable = Interface(VTable).vTableAsTemplate(@This());
+///     pub vtable = Template(VTable).vTableAsTemplate(@This());
 ///
 ///     pub fn doThing(_: *@This(), value: u32) u32 {
 ///         return value * 2;
 ///     }
 /// };
 ///
-/// const TraitImpl = Interface(VTable);
+/// const TraitImpl = Template(VTable);
 /// var inst = Impl{};
 ///
 /// pub fn drawAll(drawable: anytype) void {
@@ -28,7 +34,7 @@ const reflect = @import("reflect.zig");
 /// ```
 ///
 /// This continues the explicitness of Zig which should be a code guideline all follow in most cases.
-pub fn Interface(comptime Template: type) type {
+pub fn Template(comptime Tpl: type) type {
     return struct {
         fn resolveTemplateType(comptime T: type) type {
             const t_info = comptime reflect.getTypeInfo(T);
@@ -40,15 +46,28 @@ pub fn Interface(comptime Template: type) type {
                 const func_info = t_info.getFunc(name);
                 if (func_info) |func| {
                     const PtrType = @TypeOf(func.toPtr());
+                    const p = @typeInfo(PtrType).pointer;
+                    const child = p.child;
+                    const new_child = substituteFunctionType(child, T, anyopaque);
+                    const NormalizedPtrType = @Type(.{ .pointer = .{
+                        .child = new_child,
+                        .is_const = p.is_const,
+                        .is_volatile = p.is_volatile,
+                        .is_allowzero = p.is_allowzero,
+                        .size = p.size,
+                        .alignment = p.alignment,
+                        .sentinel_ptr = p.sentinel_ptr,
+                        .address_space = p.address_space,
+                    } });
                     fields[i] = .{
                         .name = name[0..name.len :0],
-                        .type = PtrType,
+                        .type = NormalizedPtrType,
                         .default_value_ptr = null,
                         .is_comptime = false,
-                        .alignment = @alignOf(PtrType),
+                        .alignment = @alignOf(NormalizedPtrType),
                     };
                 } else {
-                    @compileError("Template method info not found for " ++ name ++ " in " ++ reflect.getSimpleTypeName(T));
+                    @compileError("Template method info not found for " ++ name ++ " in " ++ t_info.toStringEx(true));
                 }
             }
 
@@ -60,20 +79,20 @@ pub fn Interface(comptime Template: type) type {
             } });
         }
 
-        pub const TemplateType = resolveTemplateType(Template);
+        pub const TemplateType = resolveTemplateType(Tpl);
         pub const types: []const type = &[_]type{TemplateType};
 
-        pub const InterfaceType = blk: {
-            const func_names = reflect.getTypeInfo(Template).getFuncNames();
+        const _Interface = blk: {
+            const func_names = reflect.getTypeInfo(Tpl).getFuncNames();
             const field_count = func_names.len + 2;
             var fields: [field_count]std.builtin.Type.StructField = undefined;
 
             fields[0] = .{
                 .name = "ptr",
-                .type = *Template,
+                .type = *Tpl,
                 .default_value_ptr = null,
                 .is_comptime = false,
-                .alignment = @alignOf(*Template),
+                .alignment = @alignOf(*Tpl),
             };
 
             fields[1] = .{
@@ -103,38 +122,55 @@ pub fn Interface(comptime Template: type) type {
             } });
         };
 
+        pub const InterfaceType = _Interface;
+
         /// Create an interface instance from a concrete implementation.
-        pub fn create(comptime Implementation: type, inst: Implementation) blk: {
+        pub fn interface(comptime Implementation: type, inst: Implementation) blk: {
             validate(Implementation);
-            break :blk InterfaceType;
+            break :blk _Interface;
         } {
-            const vtable = vTableAsTemplate(Implementation);
-            var interface: InterfaceType = undefined;
-            interface.ptr = @ptrCast(@alignCast(@constCast(&inst)));
-            interface.vtable = vtable;
-
-            inline for (reflect.getTypeInfo(Template).getFuncNames()) |func_name| {
-                @field(interface, func_name) = @field(interface.vtable, func_name);
-            }
-
-            return interface;
+            var _inst = inst;
+            return interfaceRaw(Implementation, @ptrCast(@alignCast(&_inst)));
         }
 
         /// Create a interface instance from a pointer to a concrete implementation.
-        pub fn createPtr(comptime Implementation: type, inst: *Implementation) blk: {
+        ///
+        /// Usage:
+        /// ```zig
+        /// const DoSomething = Template(struct {
+        ///     pub fn doSomething(self: *@This(), value: u32) u32 {
+        ///         unreachable;
+        ///     }
+        /// });
+        ///
+        /// const DoingSomething = struct {
+        ///     pub fn doSomething(self: *DoingSomething, value: u32) u32 {
+        ///         return value;  // did something
+        ///     }
+        /// };
+        /// const interface = DoSomething.Interface(DoingSomething{});
+        /// interface.doSomething(42);
+        /// ```
+        pub fn interfaceFromPtr(comptime Implementation: type, inst: *Implementation) blk: {
             validate(Implementation);
-            break :blk InterfaceType;
+            break :blk _Interface;
         } {
-            const vtable = vTableAsTemplate(Implementation);
-            var interface: InterfaceType = undefined;
-            interface.ptr = @ptrCast(@alignCast(inst));
-            interface.vtable = vtable;
+            return interfaceRaw(Implementation, @ptrCast(@alignCast(inst)));
+        }
 
-            inline for (reflect.getTypeInfo(Template).getFuncNames()) |func_name| {
-                @field(interface, func_name) = @field(interface.vtable, func_name);
+        pub fn interfaceRaw(Implementation: type, inst: *anyopaque) blk: {
+            validate(Implementation);
+            break :blk _Interface;
+        } {
+            var _interface: _Interface = undefined;
+            _interface.ptr = @ptrCast(@alignCast(inst));
+            _interface.vtable = vTableAsTemplate(Implementation);
+
+            inline for (reflect.getTypeInfo(Tpl).getFuncNames()) |func_name| {
+                @field(_interface, func_name) = @field(_interface.vtable, func_name);
             }
 
-            return interface;
+            return _interface;
         }
 
         /// Validates that a type satisfies this interface.
@@ -151,7 +187,7 @@ pub fn Interface(comptime Template: type) type {
             const Implementation = value;
 
             comptime {
-                const template_info = reflect.TypeInfo.from(Template);
+                const template_info = reflect.TypeInfo.from(Tpl);
                 const impl_info = reflect.TypeInfo.from(Implementation);
                 const func_names = template_info.getFuncNames();
                 const tmpl_struct_fields = template_info.fields;
@@ -173,7 +209,7 @@ pub fn Interface(comptime Template: type) type {
 
                 for (func_names) |method_name| {
                     const tmpl_func_info = template_info.getFunc(method_name) orelse {
-                        @compileError("Template method info not found for " ++ method_name ++ " in " ++ reflect.getSimpleTypeName(Template));
+                        @compileError("Template method info not found for " ++ method_name ++ " in " ++ reflect.getSimpleTypeName(Tpl));
                     };
                     const impl_func_info = impl_info.getFunc(method_name);
 
@@ -183,7 +219,7 @@ pub fn Interface(comptime Template: type) type {
                         switch (func_params[j].info) {
                             .type => |ti| {
                                 // If the param is exactly the template type, replace with Implementation
-                                if (ti.type == Template) {
+                                if (ti.type == Tpl) {
                                     func_params[j] = reflect.ParamInfo{
                                         .info = .{ .type = reflect.TypeInfo.from(Implementation) },
                                         .is_comptime = func_params[j].is_comptime,
@@ -194,7 +230,7 @@ pub fn Interface(comptime Template: type) type {
                                     if (@typeInfo(ti.type) == .pointer) {
                                         const p = @typeInfo(ti.type).pointer;
                                         const child = p.child;
-                                        if (child == Template) {
+                                        if (child == Tpl) {
                                             const new_ptr_type = if (p.is_const) *const Implementation else *Implementation;
                                             func_params[j] = reflect.ParamInfo{
                                                 .info = .{ .type = reflect.TypeInfo.from(new_ptr_type) },
@@ -211,7 +247,7 @@ pub fn Interface(comptime Template: type) type {
                             .func => |fi| {
                                 // Substitute types within the function signature
                                 func_params[j] = reflect.ParamInfo{
-                                    .info = substituteType(.{ .func = fi }, Template, Implementation),
+                                    .info = substituteType(.{ .func = fi }, Tpl, Implementation),
                                     .is_comptime = func_params[j].is_comptime,
                                 };
                             },
@@ -245,7 +281,7 @@ pub fn Interface(comptime Template: type) type {
                                 switch (tmpl_param.info) {
                                     .func => {
                                         expected_param = reflect.ParamInfo{
-                                            .info = substituteType(tmpl_param.info, Template, Implementation),
+                                            .info = substituteType(tmpl_param.info, Tpl, Implementation),
                                             .is_noalias = tmpl_param.is_noalias,
                                             .is_comptime = tmpl_param.is_comptime,
                                         };
@@ -259,12 +295,12 @@ pub fn Interface(comptime Template: type) type {
                                 switch (tmpl_param.info) {
                                     .type => |ti| {
                                         const tmpl_type = ti.type;
-                                        if (tmpl_type == Template) {
+                                        if (tmpl_type == Tpl) {
                                             is_tmpl_self = true;
                                         } else if (@typeInfo(tmpl_type) == .pointer) {
                                             const ptr_info = @typeInfo(tmpl_type).pointer;
                                             const child = ptr_info.child;
-                                            if (child == Template) {
+                                            if (child == Tpl) {
                                                 is_tmpl_self = true;
                                                 tmpl_is_const = ptr_info.is_const;
                                             }
@@ -407,7 +443,7 @@ pub fn Interface(comptime Template: type) type {
         /// Get the struct type representing the vtable for a given implementation.
         fn VTableType(comptime Implementation: type) type {
             if (Implementation == TemplateType) return TemplateType;
-            const template_info = comptime reflect.getTypeInfo(Template);
+            const template_info = comptime reflect.getTypeInfo(Tpl);
             const impl_info = comptime reflect.getTypeInfo(Implementation);
             const func_names = template_info.getFuncNames();
             const tmpl_struct_fields = template_info.fields;
@@ -469,7 +505,7 @@ pub fn Interface(comptime Template: type) type {
             break :blk VTableType(Implementation);
         } {
             return comptime blk: {
-                const template_info = reflect.getTypeInfo(Template);
+                const template_info = reflect.getTypeInfo(Tpl);
                 const impl_info = reflect.getTypeInfo(Implementation);
                 const func_names = template_info.getFuncNames();
                 const tmpl_struct_fields = template_info.fields;
@@ -522,11 +558,12 @@ pub fn Interface(comptime Template: type) type {
     };
 }
 
-pub fn Interfaces(comptime InterfaceTypes: []const type) type {
+pub fn Interfaces(comptime TemplateTypes: []const type) type {
     const CombinedTemplate = comptime blk: {
         var all_fields: []const std.builtin.Type.StructField = &.{};
-        for (InterfaceTypes) |Intf| {
-            const template_info = reflect.getTypeInfo(Intf);
+        for (TemplateTypes) |Tpl| {
+            const template_type = Tpl.TemplateType;
+            const template_info = reflect.getTypeInfo(template_type);
             const func_names = template_info.getFuncNames();
             const tmpl_struct_fields = template_info.fields;
             const use_fields = func_names.len == 0;
@@ -569,7 +606,7 @@ pub fn Interfaces(comptime InterfaceTypes: []const type) type {
         } });
     };
 
-    return Interface(CombinedTemplate);
+    return Template(CombinedTemplate);
 }
 
 // ===== TESTS =====
@@ -613,9 +650,9 @@ test "Interface - reusable validator" {
         }
     };
 
-    const LoggerImpl = Interface(Logger);
-    LoggerImpl.validate(SimpleLogger);
-    LoggerImpl.validate(DetailedLogger);
+    const LoggerTemplate = Template(Logger);
+    LoggerTemplate.validate(SimpleLogger);
+    LoggerTemplate.validate(DetailedLogger);
 }
 
 test "Interface.vTable builds vtable" {
@@ -633,8 +670,8 @@ test "Interface.vTable builds vtable" {
         }
     };
 
-    const DrawableImpl = Interface(Drawable);
-    const vt = DrawableImpl.vTable(Sprite);
+    const DrawableTemplate = Template(Drawable);
+    const vt = DrawableTemplate.vTable(Sprite);
 
     var sprite = Sprite{};
     vt.draw(&sprite);
@@ -658,9 +695,9 @@ test "Interface.create initializes ptr field" {
         }
     };
 
-    const DrawableImpl = Interface(Drawable);
+    const DrawableTemplate = Template(Drawable);
     var spr = Sprite{};
-    const drawable_interface = DrawableImpl.vTable(Sprite);
+    const drawable_interface = DrawableTemplate.vTable(Sprite);
 
     drawable_interface.draw(&spr);
 }
@@ -702,7 +739,7 @@ test "Interfaces composition" {
         }
     };
 
-    const GameObjectImpl = Interfaces(&[_]type{ Drawable, Updatable, Destroyable });
+    const GameObjectImpl = Interfaces(&[_]type{ Template(Drawable), Template(Updatable), Template(Destroyable) });
 
     const vt = GameObjectImpl.vTable(GameObject);
 
@@ -737,7 +774,7 @@ test "Interfaces.TemplateVTable" {
     };
     _ = Impl;
 
-    const Comp = Interfaces(&[_]type{ A, B });
+    const Comp = Interfaces(&[_]type{ Template(A), Template(B) });
     const vt = Comp.TemplateType;
     try std.testing.expectEqual(2, @typeInfo(vt).@"struct".fields.len);
     const type_info = comptime reflect.getTypeInfo(Comp.TemplateType);
@@ -787,7 +824,7 @@ test "Interface.extend hierarchical composition" {
     };
 
     // Extend Drawable with Updatable
-    const DrawableUpdatableTypes = &[_]type{ Drawable, Updatable };
+    const DrawableUpdatableTypes = &[_]type{ Template(Drawable), Template(Updatable) };
     const DrawableUpdatable = Interfaces(DrawableUpdatableTypes);
     const vt = DrawableUpdatable.vTable(GameObject);
 
@@ -799,7 +836,7 @@ test "Interface.extend hierarchical composition" {
     try std.testing.expect(obj.updated);
 
     // Further extend with Destroyable - this creates Interfaces with 3 types
-    const FullGameObject = Interfaces(DrawableUpdatableTypes ++ &[_]type{Destroyable});
+    const FullGameObject = Interfaces(DrawableUpdatableTypes ++ &[_]type{Template(Destroyable)});
 
     // Validate works
     FullGameObject.validate(GameObject);
@@ -834,9 +871,9 @@ test "Const-correct interfaces" {
         }
     };
 
-    const ReaderImpl = Interface(Reader);
+    const ReaderTemplate = Template(Reader);
 
-    const vt = ReaderImpl.vTable(Buffer);
+    const vt = ReaderTemplate.vTable(Buffer);
     var buf = Buffer{ .value = 123 };
     const result = vt.read(&buf);
 
@@ -846,7 +883,7 @@ test "Const-correct interfaces" {
         }
     };
 
-    const ReaderWriter = Interfaces(&[_]type{ Reader, Writer }); // or use Interfaces(&[_]type{Reader, Writer})
+    const ReaderWriter = Interfaces(&[_]type{ Template(Reader), Template(Writer) }); // or use Interfaces(&[_]type{Template(Reader), Template(Writer)})
     const rw_vt = ReaderWriter.vTable(Buffer);
     rw_vt.write(&buf, 456);
     const new_result = rw_vt.read(&buf);
@@ -874,10 +911,10 @@ test "Const-correct interfaces - mutable implementation allowed for const templa
         }
     };
 
-    const ReaderImpl = Interface(Reader);
-    ReaderImpl.validate(MutableBuffer);
+    const ReaderTemplate = Template(Reader);
+    ReaderTemplate.validate(MutableBuffer);
 
-    const vt = ReaderImpl.vTable(MutableBuffer);
+    const vt = ReaderTemplate.vTable(MutableBuffer);
     var buf = MutableBuffer{ .value = 456 };
     const result = vt.read(&buf);
 
@@ -899,8 +936,8 @@ test "Interface - function pointer parameter substitution" {
         }
     };
 
-    const CallbackHolderImpl = Interface(CallbackHolder);
-    CallbackHolderImpl.validate(MyHolder);
+    const CallbackHolderTemplate = Template(CallbackHolder);
+    CallbackHolderTemplate.validate(MyHolder);
 }
 
 test "Interface - function pointer parameter substitution with self pointer" {
@@ -916,15 +953,15 @@ test "Interface - function pointer parameter substitution with self pointer" {
         }
     };
 
-    const ProcessorImpl = Interface(Processor);
-    ProcessorImpl.validate(MyProcessor);
+    const ProcessorTemplate = Template(Processor);
+    ProcessorTemplate.validate(MyProcessor);
 }
 
 test "Interface - Allocator vtable" {
     const MyAllocator = struct {
         base_allocator: std.mem.Allocator,
 
-        const vtable = Interface(std.mem.Allocator.VTable).vTableAsTemplate(@This());
+        const vtable = Template(std.mem.Allocator.VTable).vTableAsTemplate(@This());
 
         pub fn init(allc: std.mem.Allocator) @This() {
             return .{ .base_allocator = allc };
@@ -984,14 +1021,14 @@ test "Interface - vTableAsTemplate" {
     };
 
     var inst = Impl{};
-    var vt = Interface(VTable).vTableAsTemplate(Impl);
+    var vt = Template(VTable).vTableAsTemplate(Impl);
 
     const result = vt.doThing(&inst, 21);
     try std.testing.expectEqual(@as(u32, 42), result);
 }
 
 test "Interface - create" {
-    const Plugin = struct {
+    const PluginTemplate = struct {
         pub fn name() []const u8 {
             unreachable;
         }
@@ -1017,22 +1054,17 @@ test "Interface - create" {
         }
     };
 
-    const PluginImpl = Interface(Plugin);
-    PluginImpl.validate(MyPlugin);
-    var myPlugin = MyPlugin{};
-    const interface = PluginImpl.createPtr(MyPlugin, &myPlugin);
+    var interface = Template(PluginTemplate).interface(MyPlugin, .{});
     const plugin_name = interface.vtable.name();
     try std.testing.expectEqualStrings("MyPlugin", plugin_name);
     interface.initialize(interface.ptr);
-    try std.testing.expect(interface.isInitialized(interface.ptr));
-    myPlugin.initialized = false; // reset
-    try std.testing.expect(!interface.isInitialized(interface.ptr));
+    try std.testing.expectEqual(true, interface.isInitialized(interface.ptr));
 
     const impl = std.testing.allocator.create(MyPlugin) catch unreachable;
     defer std.testing.allocator.destroy(impl);
-    const another_interface = PluginImpl.createPtr(MyPlugin, impl);
+    const another_interface = Template(PluginTemplate).interfaceFromPtr(MyPlugin, impl);
     const another_plugin_name = another_interface.vtable.name();
     try std.testing.expectEqualStrings("MyPlugin", another_plugin_name);
     another_interface.initialize(another_interface.ptr);
-    try std.testing.expect(another_interface.isInitialized(another_interface.ptr));
+    try std.testing.expectEqual(true, another_interface.isInitialized(another_interface.ptr));
 }
