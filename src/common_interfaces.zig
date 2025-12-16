@@ -49,12 +49,17 @@ test {
     const Combined = impl.Interfaces(&[_]type{ Equal, Hashable, Comparable });
     const vt = Combined.vTable(MyType);
     try std.testing.expect(vt.eql(&obj1, &obj2) == false);
+    try std.testing.expect(vt.eql(&obj1, &obj1) == true);
     const hash1 = vt.hash(&obj1);
     const hash2 = vt.hash(&obj2);
     try std.testing.expect(hash1 != hash2);
     try std.testing.expect(vt.cmp(&obj1, &obj2) == .lt);
 
-    const interface = Combined.interface(MyType, obj1);
+    const InterfaceType = Combined.Interface;
+    var interface: InterfaceType = undefined;
+    interface.ptr = @ptrCast(@alignCast(&obj1));
+    interface.vtable = Combined.vTableAsTemplate(MyType);
+    //const interface = Combined.interface(MyType, obj1);
     try std.testing.expect(interface.vtable.eql(interface.ptr, &obj2) == false);
     try std.testing.expect(interface.vtable.hash(interface.ptr) != interface.vtable.hash(&obj2));
 }

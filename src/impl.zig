@@ -1,12 +1,6 @@
 const std = @import("std");
 const reflect = @import("reflect.zig");
 
-/// Return the concrete Interface type for a given template. This is a convenience wrapper
-/// so `Interface(SomeTemplate)` produces the interface type (the struct with `ptr`and `vtable`).
-pub inline fn Interface(comptime T: type) type {
-    return Template(T)._Interface;
-}
-
 /// Creates an interface validator from a template type.
 /// Returns a type that can validate and constrain implementations.
 ///
@@ -122,7 +116,8 @@ pub fn Template(comptime Tpl: type) type {
             } });
         };
 
-        pub const InterfaceType = _Interface;
+        /// The interface type containing `ptr` and `vtable` fields.
+        pub const Interface: type = _Interface;
 
         /// Create an interface instance from a concrete implementation.
         pub fn interface(comptime Implementation: type, inst: Implementation) blk: {
