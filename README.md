@@ -80,6 +80,8 @@ Notes:
 
 `Template(...)` provides a compile-time validator and a typed vtable generator. Useful when you want an explicit interface and a vtable for dynamic dispatch. You can also obtain a convenience bound interface instance with `Template.interface(ImplType, &instance)`.
 
+This is a different approach to interfaces in Zig.  Hopefully more useful and generally easier to integrate.
+
 See [common_interfaces.zig](src/common_interfaces.zig) for a examples.
 
 ### Change Detection

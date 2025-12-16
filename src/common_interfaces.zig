@@ -25,14 +25,17 @@ test {
         b: i32,
 
         pub fn eql(this: *const @This(), other: *const @This()) bool {
+            //std.debug.print("eql called\n", .{});
             return this.a == other.a and this.b == other.b;
         }
 
         pub fn hash(this: *const @This()) u64 {
+            //std.debug.print("hash called\n", .{});
             return @as(u64, @intCast(this.a)) * 31 + @as(u64, @intCast(this.b));
         }
 
         pub fn cmp(this: *const @This(), other: *const @This()) std.math.Order {
+            //std.debug.print("cmp called\n", .{});
             if (this.a < other.a) return .lt;
             if (this.a > other.a) return .gt;
             if (this.b < other.b) return .lt;
