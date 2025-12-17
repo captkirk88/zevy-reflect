@@ -182,7 +182,7 @@ pub const FuncInfo = struct {
     /// Create FuncInfo for a method of a struct given the struct's TypeInfo and method name
     fn fromMethod(comptime type_info: *const TypeInfo, comptime func_name: []const u8) ?FuncInfo {
         const ti = @typeInfo(type_info.type);
-        if (ti != .@"struct") {
+        if (type_info.category != .Struct or type_info.category != .Union or type_info.category != .Enum) {
             return null;
         }
 
@@ -209,10 +209,7 @@ pub const FuncInfo = struct {
                 const return_ref: ReflectInfo = .{ .type = comptime TypeInfo.from(fn_type_info.@"fn".return_type.?) };
 
                 return FuncInfo{
-                    .hash = hash(std.fmt.comptimePrint(
-                        "{s}.{s}",
-                        .{ @typeName(@Type(type_info)), func_name },
-                    )),
+                    .hash = typeHash(DeclType),
                     .name = decl.name,
                     .params = param_infos[0..pi_i],
                     .container_type = ShallowTypeInfo.from(type_info.type),
@@ -463,6 +460,7 @@ fn safeSizeOf(comptime T: type) usize {
     };
 }
 
+/// Create a leaf TypeInfo for types without fields
 fn leafTypeInfo(comptime T: type) TypeInfo {
     return TypeInfo{
         .hash = typeHash(T),
@@ -489,6 +487,7 @@ pub const TypeInfo = struct {
         Slice,
         Vector,
         Pointer,
+        Func,
         Other,
 
         pub fn from(comptime T: type) Category {
@@ -499,6 +498,7 @@ pub const TypeInfo = struct {
                 .@"union" => .Union,
                 .array, .vector => .Slice,
                 .pointer => .Pointer,
+                .@"fn" => .Func,
                 else => .Other,
             };
         }
@@ -1285,12 +1285,27 @@ pub fn getField(comptime T: type, field_name: []const u8) ?type {
 }
 
 /// Get the names of all fields in a struct
+///
+/// *Must be called at comptime.*
 pub fn getFields(comptime T: type) []const []const u8 {
-    return std.meta.fieldNames(T);
+    const type_info = comptime getTypeInfo(T);
+    var names: [type_info.fields.len][]const u8 = undefined;
+    var count: usize = 0;
+    inline for (type_info.fields) |field| {
+        names[count] = field.name;
+        count += 1;
+    }
+    return names[0..count];
 }
 
 /// Get the simple type name (without namespace/module prefixes)
 pub inline fn getSimpleTypeName(comptime T: type) []const u8 {
+    if (comptime getInfo(T)) |info| {
+        switch (info) {
+            .type => |ti| return simplifyTypeName(ti.name),
+            .func => |fi| return fi.name,
+        }
+    }
     return simplifyTypeName(@typeName(T));
 }
 
@@ -1486,7 +1501,8 @@ test "getFields - returns all field names" {
     var found_name = false;
     var found_active = false;
 
-    for (fields) |field_name| {
+    inline for (fields) |field_name| {
+        std.debug.print("Found field: {s}\n", .{field_name});
         if (std.mem.eql(u8, field_name, "id")) found_id = true;
         if (std.mem.eql(u8, field_name, "name")) found_name = true;
         if (std.mem.eql(u8, field_name, "active")) found_active = true;

@@ -5,19 +5,23 @@ const std = @import("std");
 
 const reflect = @import("reflect.zig");
 const change = @import("change.zig");
-const impl = @import("impl.zig");
+const interf = @import("interface.zig");
 
 // Code generation utilities
 pub const codegen = struct {
     pub const mixin_generator = @import("codegen/mixin_generator.zig");
 };
 
-/// Common interfaces
-pub const interfaces = struct {
-    const common = @import("common_interfaces.zig");
-    pub const Equal = common.Equal;
-    pub const Hashable = common.Hashable;
-    pub const Comparable = common.Comparable;
+/// Common templates
+pub const templates = struct {
+    pub const common = struct {
+        const _common = @import("common_interfaces.zig");
+        pub const Equal = _common.Equal;
+        pub const Hashable = _common.Hashable;
+        pub const Comparable = _common.Comparable;
+    };
+    pub const Template = interf.Template;
+    pub const Interfaces = interf.Interfaces;
 };
 
 // Types
@@ -29,9 +33,6 @@ pub const ParamInfo = reflect.ParamInfo;
 pub const ShallowTypeInfo = reflect.ShallowTypeInfo;
 
 pub const Change = change.Change;
-
-pub const Template = impl.Template;
-pub const Interfaces = impl.Interfaces;
 
 // Funcs
 pub const getTypeInfo = reflect.getTypeInfo;

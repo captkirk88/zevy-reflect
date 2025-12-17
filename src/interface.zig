@@ -1,6 +1,14 @@
 const std = @import("std");
 const reflect = @import("reflect.zig");
 
+/// Creates an interface from a template type.
+///
+/// Returns a type that has `ptr` and `vtable` fields along with all
+/// the stub methods defined in the template.
+pub fn Interface(comptime Tpl: type) type {
+    return Template(Tpl).InterfaceType;
+}
+
 /// Creates an interface validator from a template type.
 /// Returns a type that can validate and constrain implementations.
 ///
@@ -28,7 +36,7 @@ const reflect = @import("reflect.zig");
 /// ```
 ///
 /// This continues the explicitness of Zig which should be a code guideline all follow in most cases.
-pub fn Template(comptime Tpl: type) type {
+pub inline fn Template(comptime Tpl: type) type {
     return struct {
         fn resolveTemplateType(comptime T: type) type {
             const t_info = comptime reflect.getTypeInfo(T);
@@ -117,12 +125,12 @@ pub fn Template(comptime Tpl: type) type {
         };
 
         /// The interface type containing `ptr` and `vtable` fields.
-        pub const Interface: type = _Interface;
+        pub const InterfaceType: type = _Interface;
 
         /// Create an interface instance from a concrete implementation.
         pub fn interface(comptime Implementation: type, inst: Implementation) blk: {
             validate(Implementation);
-            break :blk _Interface;
+            break :blk InterfaceType;
         } {
             var _inst = inst;
             return interfaceRaw(Implementation, @ptrCast(@alignCast(&_inst)));
@@ -143,19 +151,19 @@ pub fn Template(comptime Tpl: type) type {
         ///         return value;  // did something
         ///     }
         /// };
-        /// const interface = DoSomething.Interface(DoingSomething{});
+        /// const interface = DoSomething.interface(DoingSomething, .{});
         /// interface.doSomething(42);
         /// ```
         pub fn interfaceFromPtr(comptime Implementation: type, inst: *Implementation) blk: {
             validate(Implementation);
-            break :blk _Interface;
+            break :blk InterfaceType;
         } {
             return interfaceRaw(Implementation, @ptrCast(@alignCast(inst)));
         }
 
         pub fn interfaceRaw(Implementation: type, inst: *anyopaque) blk: {
             validate(Implementation);
-            break :blk _Interface;
+            break :blk InterfaceType;
         } {
             var _interface: _Interface = undefined;
             _interface.ptr = @ptrCast(@alignCast(inst));
@@ -166,6 +174,27 @@ pub fn Template(comptime Tpl: type) type {
             }
 
             return _interface;
+        }
+
+        /// Populates an existing interface instance from a concrete implementation.
+        pub fn populate(iface: *InterfaceType, inst: anytype) void {
+            iface.ptr = @ptrCast(@alignCast(inst));
+            iface.vtable = comptime blk: {
+                const InstType = @TypeOf(inst);
+                if (@typeInfo(InstType) != .pointer) {
+                    @compileError("populate requires a pointer to the implementation (e.g. &inst), got value of type " ++ reflect.getSimpleTypeName(InstType));
+                }
+                const Implementation = @typeInfo(InstType).pointer.child;
+                break :blk vTableAsTemplate(Implementation);
+            };
+
+            populateMethods(iface);
+        }
+
+        fn populateMethods(iface: *InterfaceType) void {
+            inline for (reflect.getTypeInfo(Tpl).getFuncNames()) |func_name| {
+                @field(iface, func_name) = @field(iface.vtable, func_name);
+            }
         }
 
         /// Validates that a type satisfies this interface.
@@ -917,7 +946,7 @@ test "Const-correct interfaces - mutable implementation allowed for const templa
     try std.testing.expectEqual(@as(u32, 1), buf.read_count);
 }
 
-test "Interface - function pointer parameter substitution" {
+test "Template - function pointer parameter substitution" {
     const CallbackHolder = struct {
         pub fn setCallback(_: *@This(), _: fn (*@This()) void) void {
             unreachable;
@@ -935,7 +964,7 @@ test "Interface - function pointer parameter substitution" {
     CallbackHolderTemplate.validate(MyHolder);
 }
 
-test "Interface - function pointer parameter substitution with self pointer" {
+test "Template - function pointer parameter substitution with self pointer" {
     const Processor = struct {
         pub fn process(self: *@This(), cb: fn (*std.mem.Allocator, u32) u32) u32 {
             return cb(self, 0);
@@ -952,7 +981,7 @@ test "Interface - function pointer parameter substitution with self pointer" {
     ProcessorTemplate.validate(MyProcessor);
 }
 
-test "Interface - Allocator vtable" {
+test "Template - Allocator vtable" {
     const MyAllocator = struct {
         base_allocator: std.mem.Allocator,
 
@@ -1004,7 +1033,7 @@ test "Interface - Allocator vtable" {
     try std.testing.expect(buf.len == 128);
 }
 
-test "Interface - vTableAsTemplate" {
+test "Template - vTableAsTemplate" {
     const VTable = struct {
         doThing: *const fn (self: *anyopaque, value: u32) u32,
     };
@@ -1022,7 +1051,7 @@ test "Interface - vTableAsTemplate" {
     try std.testing.expectEqual(@as(u32, 42), result);
 }
 
-test "Interface - create" {
+test "Template - create" {
     const PluginTemplate = struct {
         pub fn name() []const u8 {
             unreachable;
@@ -1062,4 +1091,42 @@ test "Interface - create" {
     try std.testing.expectEqualStrings("MyPlugin", another_plugin_name);
     another_interface.initialize(another_interface.ptr);
     try std.testing.expectEqual(true, another_interface.isInitialized(another_interface.ptr));
+}
+
+test "Template.populate populates Interface fields" {
+    // hopefully will fix zevy_ecs plugin issues...
+
+    const PluginTemplate = struct {
+        pub fn name() []const u8 {
+            unreachable;
+        }
+        pub fn initialize(_: *@This()) void {
+            unreachable;
+        }
+        pub fn isInitialized(_: *const @This()) bool {
+            unreachable;
+        }
+    };
+
+    const MyPlugin = struct {
+        initialized: bool = false,
+        pub fn name() []const u8 {
+            return "MyPlugin";
+        }
+        pub fn initialize(self: *@This()) void {
+            self.initialized = true;
+        }
+        pub fn isInitialized(self: *const @This()) bool {
+            return self.initialized;
+        }
+    };
+
+    var impl = MyPlugin{};
+    const Plugin = Template(PluginTemplate).InterfaceType;
+    var raw_iface: Plugin = undefined;
+    Template(PluginTemplate).populate(&raw_iface, &impl);
+    try std.testing.expectEqualStrings("MyPlugin", raw_iface.vtable.name());
+    try std.testing.expectEqual(false, raw_iface.isInitialized(raw_iface.ptr));
+    raw_iface.vtable.initialize(raw_iface.ptr);
+    try std.testing.expectEqual(true, raw_iface.isInitialized(raw_iface.ptr));
 }

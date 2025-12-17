@@ -1,5 +1,8 @@
 ### What to do...
 
+- [ ] Fix TypeInfo not handling pointer types correctly by grabbing the child type.
+- [ ] Fix TypeInfo not handling optional types correctly by grabbing the child type.
+- [ ] Generation of actual types from TypeInfo at runtime (dynamic types).
 - [x] Reduce comptime branch quota as much as possible.
 - [x] Create ParamInfo for FuncInfo
 - [ ] (low) Mixin code gen can have multiple mixins.
