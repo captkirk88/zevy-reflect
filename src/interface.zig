@@ -177,6 +177,11 @@ pub inline fn Template(comptime Tpl: type) type {
         }
 
         /// Populates an existing interface instance from a concrete implementation.
+        ///
+        /// Usage:
+        /// ```zig
+        /// Template(...).populate(&interface_instance, &impl_instance);
+        /// ```
         pub fn populate(iface: *InterfaceType, inst: anytype) void {
             iface.ptr = @ptrCast(@alignCast(inst));
             iface.vtable = comptime blk: {
@@ -471,47 +476,13 @@ pub inline fn Template(comptime Tpl: type) type {
             const impl_info = comptime reflect.getTypeInfo(Implementation);
             const func_names = template_info.getFuncNames();
             const tmpl_struct_fields = template_info.fields;
-            const use_fields = func_names.len == 0;
 
             return comptime blk: {
-                const count = if (use_fields) tmpl_struct_fields.len else func_names.len;
+                const count = tmpl_struct_fields.len + func_names.len;
                 var fields: [count]std.builtin.Type.StructField = undefined;
 
-                if (use_fields) {
-                    for (tmpl_struct_fields, 0..) |fld, i| {
-                        const func_info = impl_info.getFunc(fld.name);
-                        if (func_info) |fi| {
-                            const PtrType = @TypeOf(fi.toPtr());
-                            fields[i] = std.builtin.Type.StructField{
-                                .name = fld.name[0..fld.name.len :0],
-                                .type = PtrType,
-                                .default_value_ptr = null,
-                                .is_comptime = false,
-                                .alignment = @alignOf(PtrType),
-                            };
-                            continue;
-                        } else {
-                            @compileError("Implementation method info not found for " ++ fld.name ++ " in " ++ reflect.getSimpleTypeName(Implementation));
-                        }
-                    }
-                } else {
-                    for (func_names, 0..) |name, i| {
-                        const func_info = impl_info.getFunc(name);
-                        if (func_info) |fi| {
-                            const PtrType = @TypeOf(fi.toPtr());
-                            fields[i] = std.builtin.Type.StructField{
-                                .name = name[0..name.len :0],
-                                .type = PtrType,
-                                .default_value_ptr = null,
-                                .is_comptime = false,
-                                .alignment = @alignOf(PtrType),
-                            };
-                            continue;
-                        } else {
-                            @compileError("Implementation method info not found for " ++ name ++ " in " ++ reflect.getSimpleTypeName(Implementation));
-                        }
-                    }
-                }
+                // Populate using implementation function pointers
+                populate_fields(0, tmpl_struct_fields, func_names, impl_info, &fields, false);
 
                 break :blk @Type(.{ .@"struct" = .{
                     .layout = .auto,
@@ -533,19 +504,16 @@ pub inline fn Template(comptime Tpl: type) type {
                 const impl_info = reflect.getTypeInfo(Implementation);
                 const func_names = template_info.getFuncNames();
                 const tmpl_struct_fields = template_info.fields;
-                const use_fields = func_names.len == 0;
 
                 var table: VTableType(Implementation) = undefined;
-                if (use_fields) {
-                    for (tmpl_struct_fields) |fld| {
-                        const func_info = impl_info.getFunc(fld.name) orelse continue;
-                        @field(table, fld.name) = func_info.toPtr();
-                    }
-                } else {
-                    for (func_names) |name| {
-                        const func_info = impl_info.getFunc(name) orelse continue;
-                        @field(table, name) = func_info.toPtr();
-                    }
+                for (tmpl_struct_fields) |fld| {
+                    const func_info = impl_info.getFunc(fld.name) orelse continue;
+                    @field(table, fld.name) = func_info.toPtr();
+                }
+
+                for (func_names) |name| {
+                    const func_info = impl_info.getFunc(name) orelse continue;
+                    @field(table, name) = func_info.toPtr();
                 }
 
                 break :blk table;
@@ -566,7 +534,7 @@ pub inline fn Template(comptime Tpl: type) type {
         fn castVTableToTemplate(comptime Implementation: type, vtable: VTableType(Implementation)) TemplateType {
             const tmpl_ti = reflect.TypeInfo.from(TemplateType);
             comptime if (tmpl_ti.category != .Struct) {
-                @compileError("castVTableToTemplate requires a struct Template type (vtable)");
+                @compileError("castVTableToTemplate requires a struct Template type");
             };
 
             var out: TemplateType = undefined;
@@ -582,42 +550,53 @@ pub inline fn Template(comptime Tpl: type) type {
     };
 }
 
-pub fn Interfaces(comptime TemplateTypes: []const type) type {
+// Top-level helper for Templates to populate struct fields from template info
+fn populate_fields(comptime start: usize, tmpl_struct_fields: []const reflect.FieldInfo, func_names: []const []const u8, template_info: reflect.TypeInfo, fields: anytype, use_func_ptr: bool) void {
+    var index = start;
+    for (tmpl_struct_fields, 0..) |fld, i| {
+        const func_info: ?reflect.FuncInfo = if (!use_func_ptr) template_info.getFunc(fld.name) orelse @compileError("Template method info not found for " ++ fld.name ++ " in " ++ reflect.getSimpleTypeName(template_info.type)) else null;
+        const PtrType = if (!use_func_ptr) @TypeOf(func_info.?.toPtr()) else null;
+        fields[index + i] = std.builtin.Type.StructField{
+            .name = fld.name[0..fld.name.len :0],
+            .type = if (use_func_ptr) fld.type.type else PtrType,
+            .default_value_ptr = null,
+            .is_comptime = false,
+            .alignment = @alignOf(fld.type.type),
+        };
+    }
+    index += tmpl_struct_fields.len;
+    for (func_names, 0..) |name, i| {
+        const func_info = template_info.getFunc(name) orelse @compileError("Template method info not found for " ++ name ++ " in " ++ reflect.getSimpleTypeName(template_info.type));
+        const PtrType = @TypeOf(func_info.toPtr());
+        fields[index + i] = std.builtin.Type.StructField{
+            .name = name[0..name.len :0],
+            .type = PtrType,
+            .default_value_ptr = null,
+            .is_comptime = false,
+            .alignment = @alignOf(PtrType),
+        };
+    }
+}
+
+/// *Deprecated* use `Templates` instead to create a composition of multiple templates.
+///
+/// TODO: remove
+pub const Interfaces = Templates;
+
+/// Creates a combined interface from multiple template types.
+pub fn Templates(comptime TemplateTypes: []const type) type {
     const CombinedTemplate = comptime blk: {
         var all_fields: []const std.builtin.Type.StructField = &.{};
         for (TemplateTypes) |Tpl| {
-            const template_type = Tpl.TemplateType;
+            const template_type = if (@hasDecl(Tpl, "TemplateType")) Tpl.TemplateType else Tpl;
             const template_info = reflect.getTypeInfo(template_type);
             const func_names = template_info.getFuncNames();
             const tmpl_struct_fields = template_info.fields;
-            const use_fields = func_names.len == 0;
 
-            const count = if (use_fields) tmpl_struct_fields.len else func_names.len;
+            const count = tmpl_struct_fields.len + func_names.len;
             var fields: [count]std.builtin.Type.StructField = undefined;
-
-            if (use_fields) {
-                for (tmpl_struct_fields, 0..) |fld, i| {
-                    fields[i] = std.builtin.Type.StructField{
-                        .name = fld.name[0..fld.name.len :0],
-                        .type = fld.type.type,
-                        .default_value_ptr = null,
-                        .is_comptime = false,
-                        .alignment = @alignOf(fld.type.type),
-                    };
-                }
-            } else {
-                for (func_names, 0..) |name, i| {
-                    const func_info = template_info.getFunc(name) orelse @compileError("Template method info not found");
-                    const PtrType = @TypeOf(func_info.toPtr());
-                    fields[i] = std.builtin.Type.StructField{
-                        .name = name[0..name.len :0],
-                        .type = PtrType,
-                        .default_value_ptr = null,
-                        .is_comptime = false,
-                        .alignment = @alignOf(PtrType),
-                    };
-                }
-            }
+            // Populate fields using the template's signatures
+            populate_fields(0, tmpl_struct_fields, func_names, template_info, &fields, true);
 
             all_fields = all_fields ++ &fields;
         }
@@ -763,7 +742,7 @@ test "Interfaces composition" {
         }
     };
 
-    const GameObjectImpl = Interfaces(&[_]type{ Template(Drawable), Template(Updatable), Template(Destroyable) });
+    const GameObjectImpl = Templates(&[_]type{ Template(Drawable), Template(Updatable), Template(Destroyable) });
 
     const vt = GameObjectImpl.vTable(GameObject);
 
@@ -798,7 +777,7 @@ test "Interfaces.TemplateVTable" {
     };
     _ = Impl;
 
-    const Comp = Interfaces(&[_]type{ Template(A), Template(B) });
+    const Comp = Templates(&[_]type{ Template(A), Template(B) });
     const vt = Comp.TemplateType;
     try std.testing.expectEqual(2, @typeInfo(vt).@"struct".fields.len);
     const type_info = comptime reflect.getTypeInfo(Comp.TemplateType);
@@ -849,7 +828,7 @@ test "Interface.extend hierarchical composition" {
 
     // Extend Drawable with Updatable
     const DrawableUpdatableTypes = &[_]type{ Template(Drawable), Template(Updatable) };
-    const DrawableUpdatable = Interfaces(DrawableUpdatableTypes);
+    const DrawableUpdatable = Templates(DrawableUpdatableTypes);
     const vt = DrawableUpdatable.vTable(GameObject);
 
     var obj = GameObject{};
@@ -860,7 +839,7 @@ test "Interface.extend hierarchical composition" {
     try std.testing.expect(obj.updated);
 
     // Further extend with Destroyable - this creates Interfaces with 3 types
-    const FullGameObject = Interfaces(DrawableUpdatableTypes ++ &[_]type{Template(Destroyable)});
+    const FullGameObject = Templates(DrawableUpdatableTypes ++ &[_]type{Template(Destroyable)});
 
     // Validate works
     FullGameObject.validate(GameObject);
@@ -907,7 +886,7 @@ test "Const-correct interfaces" {
         }
     };
 
-    const ReaderWriter = Interfaces(&[_]type{ Template(Reader), Template(Writer) }); // or use Interfaces(&[_]type{Template(Reader), Template(Writer)})
+    const ReaderWriter = Templates(&[_]type{ Template(Reader), Template(Writer) }); // or use Interfaces(&[_]type{Template(Reader), Template(Writer)})
     const rw_vt = ReaderWriter.vTable(Buffer);
     rw_vt.write(&buf, 456);
     const new_result = rw_vt.read(&buf);
