@@ -20,6 +20,12 @@ pub const Comparable = interf.Template(struct {
 });
 
 test {
+    const ExtraTemplate = struct {
+        pub fn extra() void {}
+    };
+
+    const Extra = interf.Template(ExtraTemplate);
+
     const MyType = struct {
         a: i32,
         b: i32,
@@ -42,11 +48,16 @@ test {
             if (this.b > other.b) return .gt;
             return .eq;
         }
+
+        /// Used for testing missing method for combined templates (comment out to test)
+        pub fn extra() void {
+            std.debug.print("extra called\n", .{});
+        }
     };
 
     var obj1 = MyType{ .a = 1, .b = 2 };
     var obj2 = MyType{ .a = 1, .b = 3 };
-    const Combined = interf.Interfaces(&[_]type{ Equal, Hashable, Comparable });
+    const Combined = interf.Templates(&[_]type{ Equal, Hashable, Comparable, Extra });
 
     const InterfaceType = Combined.InterfaceType;
     var interface: InterfaceType = undefined;

@@ -228,7 +228,7 @@ pub inline fn Template(comptime Tpl: type) type {
                     for (tmpl_struct_fields) |fld| {
                         const impl_func_info = impl_info.getFunc(fld.name);
                         if (impl_func_info == null) {
-                            missing_methods = missing_methods ++ &[_][]const u8{fld.type.getFullInfo().name};
+                            missing_methods = missing_methods ++ &[_][]const u8{fld.name ++ ": " ++ fld.type.name};
                             continue;
                         }
 
@@ -556,12 +556,13 @@ fn populate_fields(comptime start: usize, tmpl_struct_fields: []const reflect.Fi
     for (tmpl_struct_fields, 0..) |fld, i| {
         const func_info: ?reflect.FuncInfo = if (!use_func_ptr) template_info.getFunc(fld.name) orelse @compileError("Template method info not found for " ++ fld.name ++ " in " ++ reflect.getSimpleTypeName(template_info.type)) else null;
         const PtrType = if (!use_func_ptr) @TypeOf(func_info.?.toPtr()) else null;
+        const FieldType = if (use_func_ptr) fld.type.type else PtrType;
         fields[index + i] = std.builtin.Type.StructField{
             .name = fld.name[0..fld.name.len :0],
-            .type = if (use_func_ptr) fld.type.type else PtrType,
+            .type = FieldType,
             .default_value_ptr = null,
             .is_comptime = false,
-            .alignment = @alignOf(fld.type.type),
+            .alignment = @alignOf(FieldType),
         };
     }
     index += tmpl_struct_fields.len;
@@ -629,7 +630,7 @@ test "Interface - missing required method fails compilation" {
     // };
 
     // // This should not compile - missing 'draw' method
-    // const DrawableImpl = Interface(Drawable);
+    // const DrawableImpl = Template(Drawable);
 
     // DrawableImpl.validate(BadShape);
 }
