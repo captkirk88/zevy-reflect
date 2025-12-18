@@ -579,11 +579,6 @@ fn populate_fields(comptime start: usize, tmpl_struct_fields: []const reflect.Fi
     }
 }
 
-/// *Deprecated* use `Templates` instead to create a composition of multiple templates.
-///
-/// TODO: remove
-pub const Interfaces = Templates;
-
 /// Creates a combined interface from multiple template types.
 pub fn Templates(comptime TemplateTypes: []const type) type {
     const CombinedTemplate = comptime blk: {

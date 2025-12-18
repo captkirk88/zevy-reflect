@@ -12,7 +12,6 @@ pub const codegen = struct {
     pub const mixin_generator = @import("codegen/mixin_generator.zig");
 };
 
-/// Common templates
 pub const templates = struct {
     pub const common = struct {
         const _common = @import("common_interfaces.zig");
@@ -21,7 +20,7 @@ pub const templates = struct {
         pub const Comparable = _common.Comparable;
     };
     pub const Template = interf.Template;
-    pub const Interfaces = interf.Interfaces;
+    pub const Templates = interf.Templates;
 };
 
 // Types
