@@ -204,6 +204,29 @@ pub inline fn Template(comptime Tpl: type) type {
             };
         }
 
+        /// Populate an interface instance from a value type by allocating it on the heap.
+        ///
+        /// *Caller is responsible for freeing the allocated implementation instance.*
+        pub fn populateFromValue(iface: *Interface, allocator: std.mem.Allocator, inst: anytype) !blk: {
+            const InstType = @TypeOf(inst);
+            break :blk *InstType;
+        } {
+            const InstType = @TypeOf(inst);
+            if (@typeInfo(InstType) == .pointer) {
+                @compileError("populateFromValue requires a value type for the implementation, got pointer type " ++ reflect.getSimpleTypeName(InstType));
+            }
+
+            const impl_ptr = try allocator.create(InstType);
+            impl_ptr.* = inst;
+            iface.ptr = @ptrCast(@alignCast(impl_ptr));
+            iface.vtable = comptime blk: {
+                const Implementation = InstType;
+                break :blk vTableAsTemplate(Implementation);
+            };
+
+            return impl_ptr;
+        }
+
         fn populateMethods(iface: *Interface) void {
             inline for (reflect.getTypeInfo(Tpl).getFuncNames()) |func_name| {
                 @field(iface, func_name) = @field(iface.vtable, func_name);
