@@ -1,42 +1,49 @@
 const std = @import("std");
 const reflect = @import("reflect.zig");
 
-/// Creates an interface from a template type.
-///
-/// Returns a type that has `ptr` and `vtable` fields along with all
-/// the stub methods defined in the template.
-pub fn Interface(comptime Tpl: type) type {
-    return Template(Tpl).InterfaceType;
-}
-
 /// Creates an interface validator from a template type.
 /// Returns a type that can validate and constrain implementations.
 ///
+/// This is similar to traits or interfaces in other languages, but uses
+/// compile-time reflection to verify that a type implements the required
+/// methods defined in the template type and can generate vtables with injected
+/// self parameters that match the implementation type.
+///
+/// No more `@ptrCast(@alignCast(&myStructInstance))` shenanigans!
+///
 /// Example:
 /// ```zig
-/// // Define your interfaces like you would in most programming languages
-/// const VTable = struct {
-///     doThing: *const fn (self: *anyopaque, value: u32) u32,
+/// // Define your template
+/// const Drawable = Template(struct {
+///     pub fn draw(self: *@This()) void { unreachable; }
+/// });
+///
+/// // Define concrete implementations
+/// const Sprite = struct {
+///    pub fn draw(self: *@This()) void {
+///       // draw the sprite
+///   }
 /// };
 ///
-/// const Impl = struct {
-///     pub vtable = Template(VTable).vTableAsTemplate(@This());
+/// // Validate that Sprite satisfies the Drawable interface
+/// Drawable.validate(Sprite);
 ///
-///     pub fn doThing(_: *@This(), value: u32) u32 {
-///         return value * 2;
-///     }
-/// };
-///
-/// const TraitImpl = Template(VTable);
-/// var inst = Impl{};
-///
-/// pub fn drawAll(drawable: anytype) void {
-///     Impl.vtable.doThing(&drawable, 42); // if not satisfied then compile error will be shown
-/// }
+/// // Create an interface instance from a concrete implementation
+/// var sprite = Sprite{};
+/// var interface: Drawable.Interface = undefined; // the interface type
+/// Drawable.populate(&interface, &sprite);
+/// interface.vtable.draw(interface.ptr);
 /// ```
-///
-/// This continues the explicitness of Zig which should be a code guideline all follow in most cases.
 pub inline fn Template(comptime Tpl: type) type {
+    // If Tpl is already a Template, return it directly
+    {
+        const t_info = reflect.getTypeInfo(Tpl);
+        if (t_info.category != .Struct and t_info.category != .Enum and t_info.category != .Union) {
+            @compileError("Template " ++ reflect.getSimpleTypeName(Tpl) ++ "' cannot be created from " ++ @tagName(t_info.category) ++ " types");
+        }
+        if (t_info.hasDecl("TemplateType")) return Tpl;
+    }
+
     return struct {
         pub const Name = blk: {
             if (@hasDecl(Tpl, "Name")) {
@@ -53,7 +60,7 @@ pub inline fn Template(comptime Tpl: type) type {
         };
 
         fn resolveTemplateType(comptime T: type) type {
-            const t_info = comptime reflect.getTypeInfo(T);
+            const t_info = reflect.getTypeInfo(T);
             const func_names = t_info.getFuncNames();
             if (func_names.len == 0) return T;
 
@@ -139,16 +146,7 @@ pub inline fn Template(comptime Tpl: type) type {
         };
 
         /// The interface type containing `ptr` and `vtable` fields.
-        pub const InterfaceType: type = _Interface;
-
-        /// Create an interface instance from a concrete implementation.
-        pub fn interface(comptime Implementation: type, inst: Implementation) blk: {
-            validate(Implementation);
-            break :blk InterfaceType;
-        } {
-            var _inst = inst;
-            return interfaceRaw(Implementation, @ptrCast(@alignCast(&_inst)));
-        }
+        pub const Interface: type = _Interface;
 
         /// Create a interface instance from a pointer to a concrete implementation.
         ///
@@ -170,14 +168,14 @@ pub inline fn Template(comptime Tpl: type) type {
         /// ```
         pub fn interfaceFromPtr(comptime Implementation: type, inst: *Implementation) blk: {
             validate(Implementation);
-            break :blk InterfaceType;
+            break :blk Interface;
         } {
             return interfaceRaw(Implementation, @ptrCast(@alignCast(inst)));
         }
 
         pub fn interfaceRaw(Implementation: type, inst: *anyopaque) blk: {
             validate(Implementation);
-            break :blk InterfaceType;
+            break :blk Interface;
         } {
             var _interface: _Interface = undefined;
             _interface.ptr = @ptrCast(@alignCast(inst));
@@ -194,7 +192,7 @@ pub inline fn Template(comptime Tpl: type) type {
         /// ```zig
         /// Template(...).populate(&interface_instance, &impl_instance);
         /// ```
-        pub fn populate(iface: *InterfaceType, inst: anytype) void {
+        pub fn populate(iface: *Interface, inst: anytype) void {
             iface.ptr = @ptrCast(@alignCast(inst));
             iface.vtable = comptime blk: {
                 const InstType = @TypeOf(inst);
@@ -206,7 +204,7 @@ pub inline fn Template(comptime Tpl: type) type {
             };
         }
 
-        fn populateMethods(iface: *InterfaceType) void {
+        fn populateMethods(iface: *Interface) void {
             inline for (reflect.getTypeInfo(Tpl).getFuncNames()) |func_name| {
                 @field(iface, func_name) = @field(iface.vtable, func_name);
             }
@@ -1062,8 +1060,8 @@ test "Template - create" {
             return self.initialized;
         }
     };
-
-    var interface = Template(PluginTemplate).interface(MyPlugin, .{});
+    var myPlugin = MyPlugin{};
+    var interface = Template(PluginTemplate).interfaceFromPtr(MyPlugin, &myPlugin);
     const plugin_name = interface.vtable.name();
     try std.testing.expectEqualStrings("MyPlugin", plugin_name);
     interface.vtable.initialize(interface.ptr);
@@ -1110,7 +1108,7 @@ test "Template.populate populates Interface fields" {
     };
 
     var impl = MyPlugin{};
-    const Plugin = PluginTemplate.InterfaceType;
+    const Plugin = Template(PluginTemplate).Interface;
     var raw_iface: Plugin = undefined;
     PluginTemplate.populate(&raw_iface, &impl);
     try std.testing.expectEqualStrings("MyPlugin", raw_iface.vtable.name());

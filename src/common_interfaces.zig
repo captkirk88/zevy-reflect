@@ -59,8 +59,7 @@ test {
     var obj2 = MyType{ .a = 1, .b = 3 };
     const Combined = interf.Templates(&[_]type{ Equal, Hashable, Comparable, Extra });
 
-    const InterfaceType = Combined.InterfaceType;
-    var interface: InterfaceType = undefined;
+    var interface: Combined.Interface = undefined;
     Combined.populate(&interface, &obj1);
     //const interface = Combined.interface(MyType, obj1);
     try std.testing.expect(interface.vtable.eql(interface.ptr, &obj2) == false);
