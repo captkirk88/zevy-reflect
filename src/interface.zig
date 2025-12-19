@@ -38,6 +38,20 @@ pub fn Interface(comptime Tpl: type) type {
 /// This continues the explicitness of Zig which should be a code guideline all follow in most cases.
 pub inline fn Template(comptime Tpl: type) type {
     return struct {
+        pub const Name = blk: {
+            if (@hasDecl(Tpl, "Name")) {
+                const NameValue = @field(Tpl, "Name");
+                const NameType = @TypeOf(NameValue);
+                if (NameType == []const u8) {
+                    break :blk NameValue;
+                } else {
+                    @compileError(@typeName(Tpl) ++ " 'Name' must be []const u8");
+                }
+            }
+            const t_info = reflect.getTypeInfo(Tpl);
+            break :blk t_info.toStringEx(true);
+        };
+
         fn resolveTemplateType(comptime T: type) type {
             const t_info = comptime reflect.getTypeInfo(T);
             const func_names = t_info.getFuncNames();
@@ -69,7 +83,7 @@ pub inline fn Template(comptime Tpl: type) type {
                         .alignment = @alignOf(NormalizedPtrType),
                     };
                 } else {
-                    @compileError("Template method info not found for " ++ name ++ " in " ++ t_info.toStringEx(true));
+                    @compileError("Template method info not found for '" ++ name ++ "'' in " ++ Name);
                 }
             }
 
@@ -85,9 +99,9 @@ pub inline fn Template(comptime Tpl: type) type {
         pub const types: []const type = &[_]type{TemplateType};
 
         const _Interface = blk: {
-            const func_names = reflect.getTypeInfo(Tpl).getFuncNames();
-            const field_count = func_names.len + 2;
-            var fields: [field_count]std.builtin.Type.StructField = undefined;
+            //const func_names = reflect.getTypeInfo(Tpl).getFuncNames();
+            //const field_count = func_names.len + 2;
+            var fields: [2]std.builtin.Type.StructField = undefined;
 
             fields[0] = .{
                 .name = "ptr",
@@ -105,16 +119,16 @@ pub inline fn Template(comptime Tpl: type) type {
                 .alignment = @alignOf(TemplateType),
             };
 
-            for (func_names, 0..) |func_name, i| {
-                const FieldType = @TypeOf(@field(@as(TemplateType, undefined), func_name));
-                fields[i + 2] = .{
-                    .name = func_name[0..func_name.len :0],
-                    .type = FieldType,
-                    .default_value_ptr = null,
-                    .is_comptime = false,
-                    .alignment = @alignOf(FieldType),
-                };
-            }
+            // for (func_names, 0..) |func_name, i| {
+            //     const FieldType = @TypeOf(@field(@as(TemplateType, undefined), func_name));
+            //     fields[i + 2] = .{
+            //         .name = func_name[0..func_name.len :0],
+            //         .type = FieldType,
+            //         .default_value_ptr = null,
+            //         .is_comptime = false,
+            //         .alignment = @alignOf(FieldType),
+            //     };
+            // }
 
             break :blk @Type(.{ .@"struct" = .{
                 .layout = .auto,
@@ -169,9 +183,7 @@ pub inline fn Template(comptime Tpl: type) type {
             _interface.ptr = @ptrCast(@alignCast(inst));
             _interface.vtable = vTableAsTemplate(Implementation);
 
-            inline for (reflect.getTypeInfo(Tpl).getFuncNames()) |func_name| {
-                @field(_interface, func_name) = @field(_interface.vtable, func_name);
-            }
+            //populateMethods(&_interface);
 
             return _interface;
         }
@@ -192,8 +204,6 @@ pub inline fn Template(comptime Tpl: type) type {
                 const Implementation = @typeInfo(InstType).pointer.child;
                 break :blk vTableAsTemplate(Implementation);
             };
-
-            populateMethods(iface);
         }
 
         fn populateMethods(iface: *InterfaceType) void {
@@ -238,7 +248,7 @@ pub inline fn Template(comptime Tpl: type) type {
 
                 for (func_names) |method_name| {
                     const tmpl_func_info = template_info.getFunc(method_name) orelse {
-                        @compileError("Template method info not found for " ++ method_name ++ " in " ++ reflect.getSimpleTypeName(Tpl));
+                        @compileError("Template method info not found for " ++ method_name ++ " in " ++ Name);
                     };
                     const impl_func_info = impl_info.getFunc(method_name);
 
@@ -393,7 +403,7 @@ pub inline fn Template(comptime Tpl: type) type {
 
                 if (missing_methods.len > 0) {
                     var error_msg: []const u8 = "Implementation '" ++ impl_info.toStringEx(!verbose) ++ "' ";
-                    error_msg = error_msg ++ "does not satisfy interface '" ++ template_info.toStringEx(!verbose) ++ "'. ";
+                    error_msg = error_msg ++ "does not satisfy interface '" ++ Name ++ "'. ";
 
                     error_msg = error_msg ++ "Missing methods:\n";
                     for (missing_methods) |method| {
@@ -1056,22 +1066,23 @@ test "Template - create" {
     var interface = Template(PluginTemplate).interface(MyPlugin, .{});
     const plugin_name = interface.vtable.name();
     try std.testing.expectEqualStrings("MyPlugin", plugin_name);
-    interface.initialize(interface.ptr);
-    try std.testing.expectEqual(true, interface.isInitialized(interface.ptr));
+    interface.vtable.initialize(interface.ptr);
+    try std.testing.expectEqual(true, interface.vtable.isInitialized(interface.ptr));
 
     const impl = std.testing.allocator.create(MyPlugin) catch unreachable;
     defer std.testing.allocator.destroy(impl);
     const another_interface = Template(PluginTemplate).interfaceFromPtr(MyPlugin, impl);
     const another_plugin_name = another_interface.vtable.name();
     try std.testing.expectEqualStrings("MyPlugin", another_plugin_name);
-    another_interface.initialize(another_interface.ptr);
-    try std.testing.expectEqual(true, another_interface.isInitialized(another_interface.ptr));
+    another_interface.vtable.initialize(another_interface.ptr);
+    try std.testing.expectEqual(true, another_interface.vtable.isInitialized(another_interface.ptr));
 }
 
 test "Template.populate populates Interface fields" {
     // hopefully will fix zevy_ecs plugin issues...
 
-    const PluginTemplate = struct {
+    const PluginTemplateType = struct {
+        pub const Name: []const u8 = "My Amazing Plugin";
         pub fn name() []const u8 {
             unreachable;
         }
@@ -1082,6 +1093,8 @@ test "Template.populate populates Interface fields" {
             unreachable;
         }
     };
+
+    const PluginTemplate = Template(PluginTemplateType);
 
     const MyPlugin = struct {
         initialized: bool = false,
@@ -1097,11 +1110,11 @@ test "Template.populate populates Interface fields" {
     };
 
     var impl = MyPlugin{};
-    const Plugin = Template(PluginTemplate).InterfaceType;
+    const Plugin = PluginTemplate.InterfaceType;
     var raw_iface: Plugin = undefined;
-    Template(PluginTemplate).populate(&raw_iface, &impl);
+    PluginTemplate.populate(&raw_iface, &impl);
     try std.testing.expectEqualStrings("MyPlugin", raw_iface.vtable.name());
-    try std.testing.expectEqual(false, raw_iface.isInitialized(raw_iface.ptr));
+    try std.testing.expectEqual(false, raw_iface.vtable.isInitialized(raw_iface.ptr));
     raw_iface.vtable.initialize(raw_iface.ptr);
-    try std.testing.expectEqual(true, raw_iface.isInitialized(raw_iface.ptr));
+    try std.testing.expectEqual(true, raw_iface.vtable.isInitialized(raw_iface.ptr));
 }
