@@ -1,4 +1,5 @@
 const std = @import("std");
+const config = @import("config");
 
 /// Simple comptime hash using length and character samples - no iteration required
 pub inline fn typeHash(comptime T: type) u64 {
@@ -27,9 +28,12 @@ pub inline fn hashWithSeed(data: []const u8, seed: u64) u64 {
     return std.hash.Wyhash.hash(seed, data);
 }
 
+/// Compile-time code execution quota limit
+pub const BRANCH_QUOTA = config.branch_quota;
+
 /// Internal shared storage for visited reflect entries (comptime-only).
 fn visitedData() *[]const ReflectInfo {
-    @setEvalBranchQuota(5000);
+    @setEvalBranchQuota(BRANCH_QUOTA);
     comptime var data: []const ReflectInfo = &[_]ReflectInfo{};
     return &data;
 }
@@ -940,7 +944,14 @@ fn toReflectInfo(comptime T: type) ?ReflectInfo {
             pushVisited(ri);
             return ri;
         },
-        else => {},
+        .void => {
+            const ri = ReflectInfo{ .type = leafTypeInfo(T) };
+            pushVisited(ri);
+            return ri;
+        },
+        else => {
+            @compileError("Unsupported type for reflection: " ++ @typeName(T));
+        },
     }
     return null;
 }
@@ -1048,9 +1059,7 @@ fn lazyGetFunc(comptime T: type, comptime func_name: []const u8) ?FuncInfo {
             if (pt_info == .@"opaque") {
                 return null;
             }
-            if (pt_info == .pointer and @typeInfo(pt_info.pointer.child) == .@"opaque") {
-                return null;
-            }
+            // Allow pointer to opaque (e.g., *anyopaque)
         } else {
             // anytype parameter - can't reflect
             return null;

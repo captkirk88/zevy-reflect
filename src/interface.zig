@@ -45,6 +45,10 @@ pub inline fn Template(comptime Tpl: type) type {
     }
 
     return struct {
+        fn getTplInfo() reflect.TypeInfo {
+            return reflect.getTypeInfo(Tpl);
+        }
+
         pub const Name = blk: {
             if (@hasDecl(Tpl, "Name")) {
                 const NameValue = @field(Tpl, "Name");
@@ -234,23 +238,22 @@ pub inline fn Template(comptime Tpl: type) type {
         }
 
         /// Validates that a type satisfies this interface.
-        pub fn validate(value: type) void {
-            validateThis(value, false);
+        pub fn validate(implementationType: type) void {
+            validateThis(implementationType, false);
         }
 
         /// Validates that a type satisfies this interface with verbose error messages.
-        pub fn validateVerbose(value: type) void {
-            validateThis(value, true);
+        pub fn validateVerbose(implementationType: type) void {
+            validateThis(implementationType, true);
         }
 
-        fn validateThis(value: type, comptime verbose: bool) void {
-            const Implementation = value;
+        fn validateThis(implementationType: type, comptime verbose: bool) void {
+            const Implementation = implementationType;
 
             comptime {
-                const template_info = reflect.TypeInfo.from(Tpl);
                 const impl_info = reflect.TypeInfo.from(Implementation);
-                const func_names = template_info.getFuncNames();
-                const tmpl_struct_fields = template_info.fields;
+                const func_names = getTplInfo().getFuncNames();
+                const tmpl_struct_fields = getTplInfo().fields;
 
                 var missing_methods: []const []const u8 = &.{};
 
@@ -268,8 +271,8 @@ pub inline fn Template(comptime Tpl: type) type {
                 }
 
                 for (func_names) |method_name| {
-                    const tmpl_func_info = template_info.getFunc(method_name) orelse {
-                        @compileError("Template method info not found for " ++ method_name ++ " in " ++ Name);
+                    const tmpl_func_info = getTplInfo().getFunc(method_name) orelse {
+                        @compileError("We should not be seeing this at all");
                     };
                     const impl_func_info = impl_info.getFunc(method_name);
 

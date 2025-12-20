@@ -7,20 +7,24 @@ const reflect = @import("reflect.zig");
 const change = @import("change.zig");
 const interf = @import("interface.zig");
 
+/// Compile-time code execution quota limit
+///
+/// Adjustable via the `branch_quota` build option
+pub const BRANCH_QUOTA = reflect.BRANCH_QUOTA;
+
 // Code generation utilities
 pub const codegen = struct {
     pub const mixin_generator = @import("codegen/mixin_generator.zig");
 };
 
+pub const Template = interf.Template;
+pub const Templates = interf.Templates;
+
 pub const templates = struct {
-    pub const common = struct {
-        const _common = @import("common_interfaces.zig");
-        pub const Equal = _common.Equal;
-        pub const Hashable = _common.Hashable;
-        pub const Comparable = _common.Comparable;
-    };
-    pub const Template = interf.Template;
-    pub const Templates = interf.Templates;
+    const _common = @import("common_interfaces.zig");
+    pub const Equal = _common.Equal;
+    pub const Hashable = _common.Hashable;
+    pub const Comparable = _common.Comparable;
 };
 
 // Types

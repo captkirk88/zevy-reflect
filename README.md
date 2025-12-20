@@ -11,7 +11,6 @@ A lightweight reflection and change detection library for Zig.
     - **VTable Generation**: Create vtables for dynamic dispatch based on interfaces, with support for interface extension. Tested using std.mem.Allocation.VTable interface.
 - **Change Detection**: Track changes to struct fields with minimal memory overhead (8 bytes)
 - **Zero Dependencies**: Pure Zig implementation with no external dependencies
-- **Branch Quota Efficient**: Reduced comptime branch quota usage for better compile-time performance.
 
 ## Installation
 
