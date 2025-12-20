@@ -23,7 +23,9 @@ zig fetch --save git+https://github.com/captkirk88/zevy-reflect
 Then in your `build.zig`:
 
 ```zig
-const zevy_reflect = b.dependency("zevy_reflect", .{});
+const zevy_reflect = b.dependency("zevy_reflect", .{
+    .branch_quota = 20000, // Optional: increase eval branch quota for complex reflection (default: 10000)
+});
 exe.root_module.addImport("zevy_reflect", zevy_reflect.module("zevy_reflect"));
 ```
 
