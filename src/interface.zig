@@ -9,7 +9,7 @@ const reflect = @import("reflect.zig");
 /// methods defined in the template type and can generate vtables with injected
 /// self parameters that match the implementation type.
 ///
-/// No more `@ptrCast(@alignCast(&myStructInstance))` shenanigans!
+/// No more `@ptrCast(@alignCast(&myStructInstance))` shenanigans!  If you want..
 ///
 /// Example:
 /// ```zig
@@ -455,7 +455,7 @@ pub inline fn Template(comptime Tpl: type) type {
                             .is_comptime = param.is_comptime,
                         };
                     }
-                    const new_return = if (fi.return_type) |ret| substituteType(ret, template_type, impl_type) else null;
+                    const new_return = substituteType(fi.return_type, template_type, impl_type);
                     const new_fi = reflect.FuncInfo{
                         .hash = fi.hash,
                         .name = @typeName(new_fn_type),
