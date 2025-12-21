@@ -1,17 +1,23 @@
 const std = @import("std");
 const config = @import("config");
 
-/// Bounded FNV-1a style hash over up to the first 32 bytes of the type name.
-/// This is cheap and deterministic at comptime and reduces accidental collisions
-/// for short type names without triggering heavy compile-time evaluation.
+/// Global seed for type hashing - configurable via build.zig
+pub const HASH_SEED: u64 = config.hash_seed;
+
 pub inline fn typeHash(comptime T: type) u64 {
     const name = @typeName(T);
+    //const len = if (name.len < 32) name.len else 32;
+    return std.hash.Wyhash.hash(HASH_SEED, name);
+}
+
+pub inline fn typeHashWithSeed(comptime T: type, seed: u64) u64 {
+    const name = @typeName(T);
     const len = if (name.len < 32) name.len else 32;
-    return std.hash.Wyhash.hash(0, name[0..len]);
+    return std.hash.Wyhash.hash(seed, name[0..len]);
 }
 
 pub inline fn hash(data: []const u8) u64 {
-    return std.hash.Wyhash.hash(0, data);
+    return std.hash.Wyhash.hash(HASH_SEED, data);
 }
 
 pub inline fn hashWithSeed(data: []const u8, seed: u64) u64 {
