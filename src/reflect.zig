@@ -1286,46 +1286,136 @@ pub inline fn getSimpleTypeName(comptime T: type) []const u8 {
     return simplifyTypeName(@typeName(T));
 }
 
-inline fn simplifyTypeName(type_name: []const u8) []const u8 {
+fn extractPointerPrefix(comptime type_name: []const u8) []const u8 {
+    if (type_name.len == 0 or type_name[0] != '*') return type_name[0..0];
+    var i: usize = 1;
+    while (i < type_name.len and type_name[i] == ' ') : (i += 1) {}
+    if (i + 5 <= type_name.len and std.mem.eql(u8, type_name[i .. i + 5], "const")) {
+        i += 5;
+        if (i < type_name.len and type_name[i] == ' ') i += 1;
+    }
+    return type_name[0..i];
+}
+
+fn simplifySimpleTypeName(comptime type_name: []const u8) []const u8 {
     var last_dot: ?usize = null;
     inline for (type_name, 0..) |c, i| {
-        if (c == '.') {
-            last_dot = i;
-        }
+        if (c == '.') last_dot = i;
     }
-
-    // If there's no dot, just return the original name.
     if (last_dot == null) return type_name;
+    return type_name[last_dot.? + 1 ..];
+}
 
-    // Preserve leading pointer qualifiers like '*' or '*const ' when stripping module prefixes.
-    // Example: "*const pkg.Module.Type" -> "*const Type"
-    var prefix_end: usize = 0;
-    if (type_name.len > 0 and type_name[0] == '*') {
-        var i: usize = 1;
-        while (i < type_name.len and type_name[i] == ' ') : (i += 1) {}
-        // match "const" if present
-        if (i + 5 <= type_name.len and std.mem.eql(u8, type_name[i .. i + 5], "const")) {
-            i += 5;
-            if (i < type_name.len and type_name[i] == ' ') i += 1;
+fn simplifyFunctionTypeName(comptime type_name: []const u8) []const u8 {
+    // Assume starts with "fn "
+    var i: usize = 3;
+    while (i < type_name.len and type_name[i] != '(') : (i += 1) {}
+    if (i >= type_name.len) return type_name;
+    const params_start = i + 1;
+    i += 1;
+    var paren_count: i32 = 1;
+    var params_end = i;
+    while (i < type_name.len and paren_count > 0) {
+        if (type_name[i] == '(') paren_count += 1 else if (type_name[i] == ')') paren_count -= 1;
+        if (paren_count > 0) params_end = i + 1;
+        i += 1;
+    }
+    if (paren_count != 0) return type_name;
+    const return_type_str = type_name[i..];
+    // Parse params
+    var param_buf: [16][]const u8 = undefined;
+    var param_count: usize = 0;
+    var start = params_start;
+    var j = start;
+    while (j < params_end and param_count < 16) {
+        if (type_name[j] == ',') {
+            const param = std.mem.trim(u8, type_name[start..j], &std.ascii.whitespace);
+            if (param.len > 0) {
+                param_buf[param_count] = param;
+                param_count += 1;
+            }
+            start = j + 1;
         }
-        prefix_end = i;
+        j += 1;
     }
-
-    const idx = last_dot.?;
-    if (prefix_end == 0) return type_name[idx + 1 ..];
-
-    const name_part = type_name[idx + 1 ..];
-    const out_len = prefix_end + name_part.len;
-    var out: [out_len]u8 = undefined;
+    if (start < params_end and param_count < 16) {
+        const param = std.mem.trim(u8, type_name[start..params_end], &std.ascii.whitespace);
+        if (param.len > 0) {
+            param_buf[param_count] = param;
+            param_count += 1;
+        }
+    }
+    // Simplify params
+    var simplified_buf: [16][]const u8 = undefined;
+    inline for (0..16) |idx| {
+        if (idx < param_count) {
+            const p = param_buf[idx];
+            const prefix = extractPointerPrefix(p);
+            const base = p[prefix.len..];
+            const simplified = simplifySimpleTypeName(base);
+            if (prefix.len == 0) {
+                simplified_buf[idx] = simplified;
+            } else {
+                const len = prefix.len + simplified.len;
+                var buf: [len]u8 = undefined;
+                @memcpy(buf[0..prefix.len], prefix);
+                @memcpy(buf[prefix.len..len], simplified);
+                simplified_buf[idx] = buf[0..len];
+            }
+        }
+    }
+    const simplified_return = blk: {
+        const prefix = extractPointerPrefix(return_type_str);
+        const base = return_type_str[prefix.len..];
+        const simplified = simplifySimpleTypeName(base);
+        if (prefix.len == 0) break :blk simplified;
+        const len = prefix.len + simplified.len;
+        var buf: [len]u8 = undefined;
+        @memcpy(buf[0..prefix.len], prefix);
+        @memcpy(buf[prefix.len..len], simplified);
+        break :blk buf[0..len];
+    };
+    // Calculate total length
+    var total_len: usize = 4; // "fn ("
+    inline for (0..16) |idx| {
+        if (idx < param_count) {
+            if (idx > 0) total_len += 2; // ", "
+            total_len += simplified_buf[idx].len;
+        }
+    }
+    total_len += 2; // ") "
+    total_len += simplified_return.len;
+    // Build output
+    var out: [total_len]u8 = undefined;
     var pos: usize = 0;
-    for (type_name[0..prefix_end]) |c| {
-        out[pos] = c;
-        pos += 1;
+    @memcpy(out[pos .. pos + 4], "fn (");
+    pos += 4;
+    inline for (0..16) |idx| {
+        if (idx < param_count) {
+            if (idx > 0) {
+                @memcpy(out[pos .. pos + 2], ", ");
+                pos += 2;
+            }
+            @memcpy(out[pos .. pos + simplified_buf[idx].len], simplified_buf[idx]);
+            pos += simplified_buf[idx].len;
+        }
     }
-    for (name_part) |c| {
-        out[pos] = c;
-        pos += 1;
-    }
+    @memcpy(out[pos .. pos + 2], ") ");
+    pos += 2;
+    @memcpy(out[pos .. pos + simplified_return.len], simplified_return);
+    pos += simplified_return.len;
+    return out[0..pos];
+}
+
+fn simplifyTypeName(comptime type_name: []const u8) []const u8 {
+    const prefix = extractPointerPrefix(type_name);
+    const base = type_name[prefix.len..];
+    const simplified_base = if (std.mem.startsWith(u8, base, "fn ")) simplifyFunctionTypeName(base) else simplifySimpleTypeName(base);
+    if (prefix.len == 0) return simplified_base;
+    const out_len = prefix.len + simplified_base.len;
+    var out: [out_len]u8 = undefined;
+    @memcpy(out[0..prefix.len], prefix);
+    @memcpy(out[prefix.len..out_len], simplified_base);
     return out[0..out_len];
 }
 
