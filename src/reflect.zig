@@ -1,23 +1,13 @@
 const std = @import("std");
 const config = @import("config");
 
-/// Simple comptime hash using length and character samples - no iteration required
+/// Bounded FNV-1a style hash over up to the first 32 bytes of the type name.
+/// This is cheap and deterministic at comptime and reduces accidental collisions
+/// for short type names without triggering heavy compile-time evaluation.
 pub inline fn typeHash(comptime T: type) u64 {
     const name = @typeName(T);
-    const len = name.len;
-
-    // Sample up to 8 characters from different positions for uniqueness
-    var h: u64 = len;
-    if (len > 0) h ^= @as(u64, name[0]) << 0;
-    if (len > 1) h ^= @as(u64, name[len - 1]) << 8;
-    if (len > 2) h ^= @as(u64, name[len / 2]) << 16;
-    if (len > 3) h ^= @as(u64, name[len / 3]) << 24;
-    if (len > 4) h ^= @as(u64, name[len / 4]) << 32;
-    if (len > 8) h ^= @as(u64, name[len / 8]) << 40;
-    if (len > 16) h ^= @as(u64, name[len - len / 16]) << 48;
-    if (len > 32) h ^= @as(u64, name[len - len / 32]) << 56;
-
-    return h;
+    const len = if (name.len < 32) name.len else 32;
+    return std.hash.Wyhash.hash(0, name[0..len]);
 }
 
 pub inline fn hash(data: []const u8) u64 {
@@ -143,12 +133,14 @@ pub const FieldInfo = struct {
         }
     }
 
-    pub fn get(self: *const FieldInfo) self.type.type {
-        return @as(self.type.type, @field(self.container_type.type, self.name));
+    /// Get the value of this field from the given instance.
+    pub fn get(self: *const FieldInfo, inst: *self.container_type.type) self.type.type {
+        return @as(self.type.type, @field(inst, self.name));
     }
 
-    pub fn set(self: *const FieldInfo, value: self.type) void {
-        @field(self.container_type.type, self.name) = value;
+    /// Set the value of this field on the given instance.
+    pub fn set(self: *const FieldInfo, inst: *self.container_type.type, value: self.type) void {
+        @field(inst, self.name) = value;
     }
 
     /// Check if this FieldInfo is equal to another
@@ -701,6 +693,13 @@ pub const TypeInfo = struct {
     }
 
     fn getStringRepresentation(self: *const TypeInfo, simple_name: bool) []const u8 {
+        switch (self.category) {
+            .Func => {
+                const fi = comptime FuncInfo.from(self.type);
+                return fi.?.getStringRepresentation(false, simple_name);
+            },
+            else => {},
+        }
         return std.fmt.comptimePrint("{s}", .{
             if (simple_name) simplifyTypeName(self.name) else self.name,
         });
@@ -773,7 +772,7 @@ pub const ReflectInfo = union(enum) {
     /// Create ReflectInfo from any type with cycle detection
     ///
     /// *Must be called at comptime.*
-    pub fn from(comptime T: type) ?ReflectInfo {
+    pub fn from(comptime T: type) ReflectInfo {
         return toReflectInfo(T);
     }
 
@@ -919,7 +918,12 @@ fn toReflectInfo(comptime T: type) ReflectInfo {
             pushVisited(ri);
             return ri;
         },
-        .type, .enum_literal, .noreturn, .undefined, .null, .comptime_int, .comptime_float, .bool, .int, .float, .void, .frame, .@"anyframe" => {
+        .type => {
+            const ri = ReflectInfo{ .type = TypeInfo.toTypeInfo(T) };
+            pushVisited(ri);
+            return ri;
+        },
+        else => {
             const ri = ReflectInfo{ .type = leafTypeInfo(T) };
             pushVisited(ri);
             return ri;
@@ -1075,10 +1079,10 @@ pub fn getTypeInfo(comptime T: type) TypeInfo {
     return comptime TypeInfo.from(T);
 }
 
-/// Get ReflectInfo for a type or null if unsupported
+/// Get ReflectInfo for a type
 ///
 /// *Must be called at comptime*
-pub fn getInfo(comptime T: type) ?ReflectInfo {
+pub fn getInfo(comptime T: type) ReflectInfo {
     return comptime ReflectInfo.from(T);
 }
 
@@ -1277,11 +1281,9 @@ pub fn getFields(comptime T: type) []const []const u8 {
 
 /// Get the simple type name (without namespace/module prefixes)
 pub inline fn getSimpleTypeName(comptime T: type) []const u8 {
-    if (comptime getInfo(T)) |info| {
-        switch (info) {
-            .type => |ti| return simplifyTypeName(ti.name),
-            .func => |fi| return fi.name,
-        }
+    switch (comptime getInfo(T)) {
+        .type => |ti| return simplifyTypeName(ti.name),
+        .func => |fi| return fi.name,
     }
     return simplifyTypeName(@typeName(T));
 }
@@ -1407,7 +1409,7 @@ fn simplifyFunctionTypeName(comptime type_name: []const u8) []const u8 {
     return out[0..pos];
 }
 
-fn simplifyTypeName(comptime type_name: []const u8) []const u8 {
+pub fn simplifyTypeName(comptime type_name: []const u8) []const u8 {
     const prefix = extractPointerPrefix(type_name);
     const base = type_name[prefix.len..];
     const simplified_base = if (std.mem.startsWith(u8, base, "fn ")) simplifyFunctionTypeName(base) else simplifySimpleTypeName(base);
@@ -1599,7 +1601,7 @@ test "getFieldType" {
 }
 
 test "reflect - primitive type" {
-    const info = getInfo(u32) orelse unreachable;
+    const info = getInfo(u32);
     switch (info) {
         .type => |ti| {
             try std.testing.expectEqualStrings(@typeName(u32), ti.name);
@@ -1610,7 +1612,7 @@ test "reflect - primitive type" {
 
 test "reflect - struct fields" {
     const S = struct { a: u32, b: i32 };
-    const info = getInfo(S) orelse unreachable;
+    const info = getInfo(S);
     switch (info) {
         .type => |ti| {
             try std.testing.expectEqual(@as(usize, 2), ti.fields.len);
@@ -1625,7 +1627,7 @@ test "reflect - struct fields" {
 
 test "reflect - function type" {
     const FT = fn (i32) i32;
-    const info = getInfo(FT) orelse unreachable;
+    const info = getInfo(FT);
     switch (info) {
         .func => |fi| {
             try std.testing.expectEqual(@as(usize, 1), fi.params.len);
@@ -1647,7 +1649,7 @@ test "reflect - function type" {
 }
 
 test "reflect - anyopaque support" {
-    const ptr_info = getInfo(*anyopaque) orelse return error.ShouldNotError;
+    const ptr_info = getInfo(*anyopaque);
     switch (ptr_info) {
         .type => |ti| {
             try std.testing.expectEqualStrings(@typeName(*anyopaque), ti.name);
@@ -1655,7 +1657,7 @@ test "reflect - anyopaque support" {
         else => try std.testing.expect(false),
     }
 
-    const opaque_info = getInfo(anyopaque) orelse return error.ShouldNotError;
+    const opaque_info = getInfo(anyopaque);
     switch (opaque_info) {
         .type => |ti| {
             try std.testing.expectEqualStrings(@typeName(anyopaque), ti.name);
@@ -1807,10 +1809,10 @@ test "reflect - ReflectInfo eql" {
     const T = struct { a: u32, b: i32 }; // Same layout but different type
     const FT = fn (i32) i32;
 
-    const ri_type1 = comptime ReflectInfo.from(S) orelse unreachable;
-    const ri_type1_again = comptime ReflectInfo.from(S) orelse unreachable;
-    const ri_func = comptime ReflectInfo.from(FT) orelse unreachable;
-    const ri_type2 = comptime ReflectInfo.from(T) orelse unreachable;
+    const ri_type1 = comptime ReflectInfo.from(S);
+    const ri_type1_again = comptime ReflectInfo.from(S);
+    const ri_func = comptime ReflectInfo.from(FT);
+    const ri_type2 = comptime ReflectInfo.from(T);
 
     try std.testing.expect(comptime ri_type1.eql(&ri_type1_again));
     try std.testing.expect(comptime !ri_type1.eql(&ri_func));

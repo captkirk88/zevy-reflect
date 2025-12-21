@@ -51,6 +51,9 @@ pub const hash = reflect.hash;
 pub const hashWithSeed = reflect.hashWithSeed;
 pub const typeHash = reflect.typeHash;
 pub const getSimpleTypeName = reflect.getSimpleTypeName;
+pub const simplifyTypeName = reflect.simplifyTypeName;
+
+pub const utils = @import("utils.zig");
 
 test {
     std.testing.refAllDeclsRecursive(@This());
