@@ -494,6 +494,7 @@ pub inline fn Template(comptime Tpl: type) type {
                 };
             }
             const new_return_type = if (fn_info.return_type) |rt| substituteTypeInType(rt, template_type, impl_type) else null;
+            // TODO Zig 0.16+ replaced this with @Int, @Float, @Struct, etc.
             return @Type(.{ .@"fn" = .{
                 .calling_convention = fn_info.calling_convention,
                 .is_generic = fn_info.is_generic,
