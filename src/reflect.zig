@@ -855,34 +855,15 @@ fn toReflectInfo(comptime T: type) ReflectInfo {
     const type_info = @typeInfo(T);
 
     switch (type_info) {
-        .pointer => {
-            var ti = TypeInfo.from(T);
-            ti.category = .Pointer;
-            const ri = ReflectInfo{ .type = ti };
-            pushVisited(ri);
-            return ri;
-        },
-        .@"opaque" => {
+        .pointer,
+        .optional,
+        .@"opaque",
+        .array,
+        .vector,
+        .error_union,
+        => {
+            // Create TypeInfo directly without going through toTypeInfo to avoid double-caching the type
             const ri = ReflectInfo{ .type = leafTypeInfo(T) };
-            pushVisited(ri);
-            return ri;
-        },
-        .optional => {
-            var ti = TypeInfo.from(T);
-            ti.is_optional = true;
-            const ri = ReflectInfo{ .type = ti };
-            pushVisited(ri);
-            return ri;
-        },
-        .array, .vector => {
-            // Create TypeInfo for the array/vector type itself, not the child
-            const ri = ReflectInfo{ .type = TypeInfo.from(T) };
-            pushVisited(ri);
-            return ri;
-        },
-        .error_union => {
-            // Create TypeInfo for the error union type itself, not the child
-            const ri = ReflectInfo{ .type = TypeInfo.from(T) };
             pushVisited(ri);
             return ri;
         },
@@ -1929,6 +1910,11 @@ test "reflect - fromMethod slice parameter type" {
         }
     }
 
+    std.debug.print("   Return: {s}\n", .{switch (func_info.return_type) {
+        .type => |ti| ti.name,
+        else => "not a type",
+    }});
+
     // Check that param 1 is []const u8, not u8
     switch (func_info.params[1].info) {
         .type => |ti| {
@@ -2027,4 +2013,61 @@ test "TypeInfo.new constructs value" {
     const foo_override = ti.new(.{ .a = 5 });
     try std.testing.expectEqual(@as(i32, 5), foo_override.a);
     try std.testing.expectEqual(@as(i32, 2), foo_override.b);
+}
+
+test "reflect - pointer type distinct from pointee type" {
+    const MyStruct = struct {
+        value: i32 = 42,
+    };
+
+    // Get reflection info for the struct and its pointer
+    const struct_info = comptime getInfo(MyStruct);
+    const ptr_info = comptime getInfo(*MyStruct);
+
+    // They should be different
+    try std.testing.expect(!struct_info.eql(&ptr_info));
+
+    // The struct should be a struct category
+    try std.testing.expectEqual(TypeInfo.Category.Struct, struct_info.type.category);
+
+    // The pointer should be a pointer category
+    try std.testing.expectEqual(TypeInfo.Category.Pointer, ptr_info.type.category);
+
+    // Verify cached lookups return the correct types
+    const struct_info2 = comptime getInfo(MyStruct);
+    const ptr_info2 = comptime getInfo(*MyStruct);
+
+    try std.testing.expect(struct_info.eql(&struct_info2));
+    try std.testing.expect(ptr_info.eql(&ptr_info2));
+
+    // Verify both have empty fields (pointer types don't have fields)
+    try std.testing.expectEqual(@as(usize, 0), ptr_info.type.fields.len);
+    // But the struct should have a field
+    try std.testing.expectEqual(@as(usize, 1), struct_info.type.fields.len);
+}
+
+test "reflect - optional and array types distinct from base type" {
+    const BaseType = i32;
+
+    const base_info = comptime getInfo(BaseType);
+    const optional_info = comptime getInfo(?BaseType);
+    const array_info = comptime getInfo([4]BaseType);
+
+    // All should be different
+    try std.testing.expect(!base_info.eql(&optional_info));
+    try std.testing.expect(!base_info.eql(&array_info));
+    try std.testing.expect(!optional_info.eql(&array_info));
+
+    // Verify categories
+    try std.testing.expectEqual(TypeInfo.Category.Primitive, base_info.type.category);
+    try std.testing.expectEqual(TypeInfo.Category.Other, optional_info.type.category);
+    try std.testing.expectEqual(TypeInfo.Category.Slice, array_info.type.category);
+
+    // Verify optional flag
+    try std.testing.expect(!base_info.type.is_optional);
+    try std.testing.expect(optional_info.type.is_optional);
+
+    // Verify cached lookups work correctly
+    const optional_info2 = comptime getInfo(?BaseType);
+    try std.testing.expect(optional_info.eql(&optional_info2));
 }
