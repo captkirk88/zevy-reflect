@@ -188,7 +188,7 @@ pub const FuncInfo = struct {
             return null;
         }
 
-        inline for (getDecls(ti)) |decl| {
+        inline for (_getDecls(ti)) |decl| {
             if (std.mem.eql(u8, decl.name, func_name)) {
                 const DeclType = @TypeOf(@field(type_info.type, decl.name));
                 const fn_type_info = @typeInfo(DeclType);
@@ -482,6 +482,8 @@ pub const TypeInfo = struct {
         Vector,
         Pointer,
         Func,
+        Primitive,
+        Void,
         Other,
 
         pub fn from(comptime T: type) Category {
@@ -493,6 +495,8 @@ pub const TypeInfo = struct {
                 .array, .vector => .Slice,
                 .pointer => .Pointer,
                 .@"fn" => .Func,
+                .bool, .int, .float => .Primitive,
+                .void => .Void,
                 else => .Other,
             };
         }
@@ -952,7 +956,7 @@ fn lazyGetDeclNames(comptime T: type, comptime mode: DeclNameMode) []const []con
         return lazyGetDeclNames(type_info.pointer.child, mode);
     }
 
-    const decls = getDecls(type_info);
+    const decls = _getDecls(type_info);
     if (decls.len == 0) {
         return &[_][]const u8{};
     }
@@ -1107,7 +1111,7 @@ pub fn hasStruct(comptime T: type, struct_name: []const u8) bool {
             const first_part = struct_name[0..dot_index];
             search_name = struct_name[dot_index + 1 ..];
             // Find the decl with name first_part
-            inline for (comptime getDecls(type_info)) |decl| {
+            inline for (comptime _getDecls(type_info)) |decl| {
                 if (std.mem.eql(u8, decl.name, first_part)) {
                     const DeclType = @field(T, decl.name);
                     const decl_type_info = @typeInfo(DeclType);
@@ -1119,7 +1123,7 @@ pub fn hasStruct(comptime T: type, struct_name: []const u8) bool {
             return false;
         } else {
             // No dot, check direct
-            inline for (comptime getDecls(type_info)) |decl| {
+            inline for (comptime _getDecls(type_info)) |decl| {
                 if (std.mem.eql(u8, decl.name, struct_name)) {
                     const DeclType = @field(T, decl.name);
                     const decl_type_info = @typeInfo(DeclType);
@@ -1134,14 +1138,37 @@ pub fn hasStruct(comptime T: type, struct_name: []const u8) bool {
     return false;
 }
 
-fn getDecls(comptime type_info: std.builtin.Type) []const std.builtin.Type.Declaration {
-    //@setEvalBranchQuota(10_000);
-    if (type_info == .pointer) return getDecls(@typeInfo(type_info.pointer.child));
+fn _getDecls(comptime type_info: std.builtin.Type) []const std.builtin.Type.Declaration {
+    if (type_info == .pointer) return _getDecls(@typeInfo(type_info.pointer.child));
     if (type_info == .@"struct") return type_info.@"struct".decls;
     if (type_info == .@"enum") return type_info.@"enum".decls;
     if (type_info == .@"union") return type_info.@"union".decls;
     if (type_info == .@"opaque") return type_info.@"opaque".decls;
     return &[_]std.builtin.Type.Declaration{};
+}
+
+/// Get all decls (type constants) of a type
+///
+/// *Must be called at comptime.*
+pub fn getDecls(type_info: *TypeInfo) []TypeInfo {
+    const names = comptime type_info.getDeclNames();
+    var count: usize = 0;
+    inline for (names) |n| {
+        if (type_info.getDecl(n)) |_| {
+            count += 1;
+        }
+    }
+
+    var decls: [count]TypeInfo = undefined;
+    var idx: usize = 0;
+    inline for (names) |n| {
+        if (type_info.getDecl(n)) |dt| {
+            decls[idx] = dt;
+            idx += 1;
+        }
+    }
+
+    return decls;
 }
 
 /// Check if a struct has a function with the given name
