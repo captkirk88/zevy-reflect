@@ -10,14 +10,20 @@ pub const BRANCH_QUOTA = config.branch_quota;
 
 pub inline fn typeHash(comptime T: type) u64 {
     const name = @typeName(T);
-    //const len = if (name.len < 32) name.len else 32;
-    return std.hash.Wyhash.hash(HASH_SEED, name);
+    var h: u64 = 0;
+    for (name) |c| {
+        h = (h *% 31) +% c;
+    }
+    return h;
 }
 
 pub inline fn typeHashWithSeed(comptime T: type, seed: u64) u64 {
     const name = @typeName(T);
-    const len = if (name.len < 32) name.len else 32;
-    return std.hash.Wyhash.hash(seed, name[0..len]);
+    var h = seed;
+    for (name) |c| {
+        h = (h *% 31) +% c;
+    }
+    return h;
 }
 
 pub inline fn hash(data: []const u8) u64 {
