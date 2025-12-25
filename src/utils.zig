@@ -3,17 +3,33 @@ const reflect = @import("reflect.zig");
 
 /// Check if a type is an instantiation of a generic type with the given base name.
 /// For example, isGenericInstantiation(MyType, "ArrayList") checks if MyType is ArrayList(SomeType).
-pub fn isGenericInstantiation(comptime T: anytype, comptime base_name: []const u8) bool {
+pub fn isGeneric(comptime T: anytype) bool {
     const info = reflect.getInfo(if (@typeInfo(@TypeOf(T)) == .type) T else @TypeOf(T));
     switch (info) {
         .type => {
             const name = @typeName(T);
-            var buf: [base_name.len + 1]u8 = undefined;
-            @memcpy(buf[0..base_name.len], base_name);
-            buf[base_name.len] = '(';
-            return std.mem.indexOf(u8, name, &buf) != null;
+            // Simple check for '(' without using std.mem.indexOf (which is expensive at comptime)
+            for (name) |c| {
+                if (c == '(') return true;
+            }
+            return false;
         },
-        .func => |fi| return fi.return_type == .type and fi.return_type.type.type == type,
+        .func => |fi| {
+            if (fi.return_type == .type and fi.return_type.type.type == type) {
+                if (fi.getParam(0)) |first_param| {
+                    if (first_param.type == type) return true;
+                }
+            }
+        },
+        .raw => |ty| {
+            if (reflect.getInfo(ty).getFuncInfo()) |fi| {
+                if (fi.return_type == .type and fi.return_type.type.type == type) {
+                    if (fi.getParam(0)) |first_param| {
+                        if (first_param.type == type) return true;
+                    }
+                }
+            }
+        },
     }
 }
 
@@ -78,23 +94,24 @@ pub fn getPublicTypes(comptime T: type) ?struct {
 }
 
 test "isGenericInstantiation - primitive type" {
-    try std.testing.expect(!isGenericInstantiation(u32, "Gen"));
+    try std.testing.expect(!isGeneric(u32));
 }
 
 test "isGenericInstantiation - wrong base name" {
     const list = Gen(u32);
-    try std.testing.expect(!isGenericInstantiation(list, "Other"));
+    // Gen(u32) is an instantiated generic type, so isGeneric should return true
+    try std.testing.expect(isGeneric(list));
 }
 
 test "isGenericInstantiation - custom generic function" {
-    try std.testing.expect(isGenericInstantiation(Gen, "Gen"));
+    try std.testing.expect(isGeneric(Gen));
 }
 
 test "isGenericInstantiation - instantiated generic type" {
     const gen = Gen;
     const generic = gen(u32);
-    try std.testing.expect(isGenericInstantiation(gen, "Gen"));
-    try std.testing.expect(isGenericInstantiation(generic, "Gen"));
+    try std.testing.expect(isGeneric(gen));
+    try std.testing.expect(isGeneric(generic));
 }
 
 test "getPublicTypes - struct with public types" {

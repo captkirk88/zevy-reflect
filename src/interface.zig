@@ -34,6 +34,7 @@ const reflect = @import("reflect.zig");
 /// Drawable.populate(&interface, &sprite);
 /// interface.vtable.draw(interface.ptr);
 /// ```
+///
 pub inline fn Template(comptime Tpl: type) type {
     // If Tpl is already a Template, return it directly
     {
@@ -41,6 +42,7 @@ pub inline fn Template(comptime Tpl: type) type {
         if (t_info.category != .Struct and t_info.category != .Enum and t_info.category != .Union) {
             @compileError("Template " ++ reflect.getSimpleTypeName(Tpl) ++ "' cannot be created from " ++ @tagName(t_info.category) ++ " types");
         }
+
         if (t_info.hasDecl("TemplateType")) return Tpl;
     }
 
@@ -314,6 +316,33 @@ pub inline fn Template(comptime Tpl: type) type {
                                     .is_comptime = func_params[j].is_comptime,
                                 };
                             },
+                            .raw => |ty| {
+                                // If the param is exactly the template type, replace with Implementation
+                                if (ty == Tpl) {
+                                    func_params[j] = reflect.ParamInfo{
+                                        .info = .{ .type = reflect.TypeInfo.from(Implementation) },
+                                        .is_comptime = func_params[j].is_comptime,
+                                    };
+                                } else {
+                                    // If it's a pointer to the template (e.g. *Template or *const Template),
+                                    // construct a corresponding pointer-to-Implementation preserving constness.
+                                    if (@typeInfo(ty) == .pointer) {
+                                        const p = @typeInfo(ty).pointer;
+                                        const child = p.child;
+                                        if (child == Tpl) {
+                                            const new_ptr_type = if (p.is_const) *const Implementation else *Implementation;
+                                            func_params[j] = reflect.ParamInfo{
+                                                .info = .{ .type = reflect.TypeInfo.from(new_ptr_type) },
+                                                .is_comptime = func_params[j].is_comptime,
+                                            };
+                                        } else {
+                                            func_params[j] = reflect.ParamInfo{ .info = .{ .type = ty }, .is_comptime = func_params[j].is_comptime };
+                                        }
+                                    } else {
+                                        func_params[j] = reflect.ParamInfo{ .info = .{ .type = ty }, .is_comptime = func_params[j].is_comptime };
+                                    }
+                                }
+                            },
                         }
                     }
 
@@ -324,6 +353,7 @@ pub inline fn Template(comptime Tpl: type) type {
                         .container_type = impl_info.toShallow(),
                         .hash = tmpl_func_info.hash,
                         .type = tmpl_func_info.type,
+                        .category = tmpl_func_info.category,
                     };
                     if (impl_func_info == null) {
                         missing_methods = missing_methods ++ &[_][]const u8{mixed_func_info.toStringEx(false, !verbose)};
@@ -463,8 +493,13 @@ pub inline fn Template(comptime Tpl: type) type {
                         .return_type = new_return,
                         .container_type = fi.container_type,
                         .type = reflect.ShallowTypeInfo.from(new_fn_type),
+                        .category = fi.category,
                     };
                     return .{ .func = new_fi };
+                },
+                .raw => |ty| {
+                    const new_type = substituteTypeInType(ty, template_type, impl_type);
+                    return .{ .type = reflect.TypeInfo.from(new_type) };
                 },
             }
         }

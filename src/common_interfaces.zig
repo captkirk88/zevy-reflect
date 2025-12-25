@@ -20,11 +20,10 @@ pub const Comparable = interf.Template(struct {
 });
 
 test {
-    const ExtraTemplate = struct {
+    const Extra = interf.Template(struct {
+        pub const Name: []const u8 = "Extra";
         pub fn extra() void {}
-    };
-
-    const Extra = interf.Template(ExtraTemplate);
+    });
 
     const MyType = struct {
         a: i32,

@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const branch_quota_option = b.option(i32, "branch_quota", "Eval branch quota for reflection (default 10000)") orelse 10000;
+    const branch_quota_option = b.option(i32, "branch_quota", "Eval branch quota for reflection (default 20000)") orelse 20_000;
     const hash_seed_option = b.option(u64, "seed", "Seed for type hashing (default 0)") orelse 0;
 
     const config_content = std.fmt.allocPrint(b.allocator, "pub const branch_quota = {};\npub const hash_seed: u64 = {};\n", .{ branch_quota_option, hash_seed_option }) catch unreachable;
