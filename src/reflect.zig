@@ -6,24 +6,16 @@ const util = @import("utils.zig");
 pub const HASH_SEED: u64 = config.hash_seed;
 
 /// Compile-time code execution quota limit
-pub const BRANCH_QUOTA = config.branch_quota;
+pub const BRANCH_QUOTA: u32 = config.branch_quota;
 
 pub inline fn typeHash(comptime T: type) u64 {
     const name = @typeName(T);
-    var h: u64 = 0;
-    for (name) |c| {
-        h = (h *% 31) +% c;
-    }
-    return h;
+    return std.hash.Wyhash.hash(HASH_SEED, name);
 }
 
 pub inline fn typeHashWithSeed(comptime T: type, seed: u64) u64 {
     const name = @typeName(T);
-    var h = seed;
-    for (name) |c| {
-        h = (h *% 31) +% c;
-    }
-    return h;
+    return std.hash.Wyhash.hash(seed, name);
 }
 
 pub inline fn hash(data: []const u8) u64 {
@@ -34,10 +26,10 @@ pub inline fn hashWithSeed(data: []const u8, seed: u64) u64 {
     return std.hash.Wyhash.hash(seed, data);
 }
 
-/// Cache entry for visited types - stores full ReflectInfo
+/// Cache entry for visited types - stores the std.builtin.Type
 const CacheEntry = struct {
     hash: u64,
-    info: ReflectInfo,
+    builtin: std.builtin.Type,
 };
 
 /// Internal shared storage for visited types (comptime-only).
@@ -47,34 +39,31 @@ fn visitedCache() *[]const CacheEntry {
 }
 
 /// Look up a previously-visited type by hash.
-/// Returns the cached ReflectInfo if found, null otherwise.
-fn lookupVisitedByHash(comptime hash_val: u64) ?ReflectInfo {
+/// Returns the cached builtin if found, null otherwise.
+fn lookupVisitedByHash(comptime hash_val: u64) ?std.builtin.Type {
     const data = visitedCache().*;
     for (data) |entry| {
-        if (entry.hash == hash_val) return entry.info;
+        if (entry.hash == hash_val) return entry.builtin;
     }
     return null;
 }
 
 /// Check if a type has been visited and return cached ReflectInfo if so.
-fn isVisited(comptime T: type) ?ReflectInfo {
+fn isVisited(comptime T: type) ?std.builtin.Type {
     const h = typeHash(T);
     if (lookupVisitedByHash(h)) |info| return info;
     return null;
 }
 
 /// Mark a type as visited with its ReflectInfo.
-fn markVisited(comptime T: type, comptime info: ReflectInfo) void {
+fn markVisited(comptime T: type, comptime builtin: std.builtin.Type) void {
     const data_ptr = visitedCache();
     const h = typeHash(T);
     // Check if already visited
     for (data_ptr.*) |entry| {
-        if (entry.hash == h) {
-            if (entry.info.eql(&info) == false) entry.info = info;
-            return;
-        }
+        if (entry.hash == h) return;
     }
-    data_ptr.* = data_ptr.* ++ [_]CacheEntry{.{ .hash = h, .info = info }};
+    data_ptr.* = data_ptr.* ++ [_]CacheEntry{.{ .hash = h, .builtin = builtin }};
 }
 
 /// Shallow type information for field types - doesn't recurse into nested types.
@@ -432,17 +421,19 @@ pub const FuncInfo = struct {
     // Helper for FuncInfo.from with cycle detection
     fn toFuncInfo(comptime FuncType: type) FuncInfo {
         // Check for cycles using hash-based lookup - return cached FuncInfo if available
-        if (isVisited(FuncType)) |cached| {
-            return switch (cached) {
+        if (isVisited(FuncType)) |builtin| {
+            const ri = buildReflectInfo(FuncType, builtin);
+            return switch (ri) {
                 .func => |fi| fi,
                 .type => |ti| FuncInfo{
                     .hash = ti.hash,
                     .name = ti.name,
                     .params = &[_]ParamInfo{},
-                    .return_type = cached,
+                    .return_type = ri,
                     .type = ShallowTypeInfo.from(FuncType),
                     .category = .Func,
                 },
+                else => @compileError("Unexpected"),
             };
         }
 
@@ -483,7 +474,7 @@ pub const FuncInfo = struct {
             .return_type = return_type_info,
             .category = FuncInfo.Category.from(FuncType),
         };
-        markVisited(FuncType, ReflectInfo{ .func = result });
+        markVisited(FuncType, @typeInfo(FuncType));
         return result;
     }
 };
@@ -655,10 +646,12 @@ pub const TypeInfo = struct {
     /// Uses hash-based cycle detection to avoid branch quota issues.
     fn toTypeInfo(comptime T: type) TypeInfo {
         // Check for cycles using hash-based lookup - return cached TypeInfo if available
-        if (isVisited(T)) |cached| {
-            return switch (cached) {
+        if (isVisited(T)) |builtin| {
+            const ri = buildReflectInfo(T, builtin);
+            return switch (ri) {
                 .type => |ti| ti,
                 .func => leafTypeInfo(T),
+                else => @compileError("Unexpected"),
             };
         }
 
@@ -674,7 +667,7 @@ pub const TypeInfo = struct {
             .category = leaf_type_info.category,
             .is_optional = type_info == .optional,
         };
-        markVisited(T, ReflectInfo{ .type = ti });
+        markVisited(T, @typeInfo(T));
         return ti;
     }
 
@@ -927,23 +920,17 @@ pub const ReflectInfo = union(enum) {
 
 fn toReflectInfo(comptime T: type) ReflectInfo {
     // Check for cycles first - return cached info if available
-    if (isVisited(T)) |cached| {
-        return cached;
+    if (isVisited(T)) |builtin| {
+        return buildReflectInfo(T, builtin);
     }
 
-    const type_info = @typeInfo(T);
-
-    // Build the ReflectInfo
-    const result: ReflectInfo = buildReflectInfo(T, type_info);
-
-    // Cache it for future use
-    markVisited(T, result);
-
-    return result;
+    const builtin = @typeInfo(T);
+    markVisited(T, builtin);
+    return buildReflectInfo(T, builtin);
 }
 
-fn buildReflectInfo(comptime T: type, comptime type_info: std.builtin.Type) ReflectInfo {
-    switch (type_info) {
+fn buildReflectInfo(comptime T: type, comptime builtin: std.builtin.Type) ReflectInfo {
+    switch (builtin) {
         .pointer,
         .optional,
         .@"opaque",
@@ -958,11 +945,11 @@ fn buildReflectInfo(comptime T: type, comptime type_info: std.builtin.Type) Refl
             var ri = ReflectInfo{ .type = TypeInfo{
                 .hash = typeHash(T),
                 .size = safeSizeOf(T),
-                .type = ShallowTypeInfo.from(T),
+                .type = T,
                 .name = @typeName(T),
                 .fields = undefined,
             } };
-            if (type_info.error_set) |error_set| {
+            if (builtin.error_set) |error_set| {
                 const len = error_set.len;
                 var field_infos: [len]FieldInfo = undefined;
                 for (error_set, 0..) |err, i| {
@@ -970,11 +957,7 @@ fn buildReflectInfo(comptime T: type, comptime type_info: std.builtin.Type) Refl
                     field_infos[i] = FieldInfo{
                         .name = err.name,
                         .offset = 0,
-                        .type = ShallowTypeInfo{
-                            .type = ErrType,
-                            .name = @typeName(ErrType),
-                            .size = @sizeOf(ErrType),
-                        },
+                        .type = ShallowTypeInfo.from(ErrType),
                         .container_type = ShallowTypeInfo.from(T),
                     };
                 }
