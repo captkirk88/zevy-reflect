@@ -38,7 +38,6 @@ pub const ShallowTypeInfo = reflect.ShallowTypeInfo;
 pub const Change = change.Change;
 
 // Funcs
-pub const getTypeInfo = reflect.getTypeInfo;
 pub const getReflectInfo = reflect.getInfo;
 pub const getFieldType = reflect.getField;
 pub const getFieldNames = reflect.getFields;

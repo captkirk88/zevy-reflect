@@ -481,7 +481,16 @@ pub const FuncInfo = struct {
 
 fn safeSizeOf(comptime T: type) usize {
     return switch (@typeInfo(T)) {
-        .@"opaque" => 0,
+        .@"opaque" => {
+            if (T == anyopaque) return 0;
+            if (comptime lazyGetDecl(T, "Type")) |type_decl| {
+                return safeSizeOf(type_decl.type);
+            } else if (comptime lazyGetDecl(T, "Child")) |child_decl| {
+                return safeSizeOf(child_decl.type);
+            } else {
+                @compileError(std.fmt.comptimePrint("couldn't find opaque's type from any declarations called Type or Child for {s}", .{@typeName(T)}));
+            }
+        },
         .comptime_int => 0,
         .comptime_float => 0,
         .type => 0,
@@ -815,7 +824,7 @@ pub const TypeInfo = struct {
             const is_opaque = field_type_info == .@"opaque";
             const is_ptr_to_opaque = field_type_info == .pointer and @typeInfo(field_type_info.pointer.child) == .@"opaque";
 
-            const field_offset = if (type_info == .@"enum" or type_info == .@"union") 0 else if (is_opaque or is_ptr_to_opaque) 0 else @offsetOf(T, field.name); // TODO try using only @offsetOf
+            const field_offset = if (type_info == .@"enum" or type_info == .@"union") 0 else if (is_opaque or is_ptr_to_opaque) 0 else @offsetOf(T, field.name);
 
             field_infos[field_count] = FieldInfo{
                 .name = field.name,
@@ -884,8 +893,6 @@ pub const ReflectInfo = union(enum) {
     }
 
     /// Check if this ReflectInfo is equal to another
-    ///
-    /// *Must be called at comptime.*
     pub inline fn eql(self: *const ReflectInfo, other: *const ReflectInfo) bool {
         switch (self.*) {
             .type => |ti| {
@@ -909,11 +916,20 @@ pub const ReflectInfo = union(enum) {
         }
     }
 
+    /// Get a string representation of the reflected info
     pub fn toString(self: *const ReflectInfo) []const u8 {
         switch (self.*) {
             .type => |til| return til.toString(),
             .raw => return @typeName(self.raw),
             .func => |fil| return fil.toString(),
+        }
+    }
+
+    pub fn toStringEx(self: *const ReflectInfo, simple_names: bool) []const u8 {
+        switch (self.*) {
+            .type => |til| return til.toStringEx(simple_names),
+            .raw => return if (simple_names) getSimpleTypeName(self.raw) else @typeName(self.raw),
+            .func => |fil| return fil.toStringEx(false, simple_names),
         }
     }
 };
@@ -938,7 +954,6 @@ fn buildReflectInfo(comptime T: type, comptime builtin: std.builtin.Type) Reflec
         .vector,
         .error_union,
         => {
-            // Create TypeInfo directly without going through toTypeInfo to avoid double-caching the type
             return ReflectInfo{ .type = leafTypeInfo(T) };
         },
         .error_set => {
@@ -1123,28 +1138,6 @@ fn lazyGetFunc(type_info: *const TypeInfo, comptime func_name: []const u8) ?Func
     };
 
     return func_info;
-}
-
-/// Get full TypeInfo for a type
-///
-/// *Must be called at comptime*
-pub fn getTypeInfo(comptime T: type) TypeInfo {
-    @setEvalBranchQuota(BRANCH_QUOTA);
-    switch (getInfo(T)) {
-        .type => |ti| return ti,
-        .func => |_| {
-            @compileError(std.fmt.comptimePrint(
-                "getTypeInfo cannot be called on function types. Use getInfo instead. Type: {s}",
-                .{@typeName(T)},
-            ));
-        },
-        .raw => |ty| {
-            @compileError(std.fmt.comptimePrint(
-                "getTypeInfo cannot be called on unsupported types. Type: {s}",
-                .{@typeName(ty)},
-            ));
-        },
-    }
 }
 
 /// Get ReflectInfo for a type
@@ -1361,14 +1354,18 @@ pub fn getField(comptime T: type, field_name: []const u8) ?type {
 ///
 /// *Must be called at comptime.*
 pub fn getFields(comptime T: type) []const []const u8 {
-    const type_info = comptime getTypeInfo(T);
-    var names: [type_info.fields.len][]const u8 = undefined;
-    var count: usize = 0;
-    inline for (type_info.fields) |field| {
-        names[count] = field.name;
-        count += 1;
+    switch (comptime getInfo(T)) {
+        .type => |type_info| {
+            var names: [type_info.fields.len][]const u8 = undefined;
+            var count: usize = 0;
+            inline for (type_info.fields) |field| {
+                names[count] = field.name;
+                count += 1;
+            }
+            return names[0..count];
+        },
+        else => @compileError(std.fmt.comptimePrint("TypeInfo.getFields: type '{s}' has no fields", .{@typeName(T)})),
     }
-    return names[0..count];
 }
 
 /// Get the simple type name (without namespace/module prefixes)

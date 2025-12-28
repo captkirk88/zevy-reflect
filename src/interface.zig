@@ -38,17 +38,24 @@ const reflect = @import("reflect.zig");
 pub inline fn Template(comptime Tpl: type) type {
     // If Tpl is already a Template, return it directly
     {
-        const t_info = reflect.getTypeInfo(Tpl);
-        if (t_info.category != .Struct and t_info.category != .Enum and t_info.category != .Union) {
-            @compileError("Template " ++ reflect.getSimpleTypeName(Tpl) ++ "' cannot be created from " ++ @tagName(t_info.category) ++ " types");
-        }
+        switch (reflect.getInfo(Tpl)) {
+            .func => |_| {
+                @compileError("Template cannot be created from function types");
+            },
+            .type => |t_info| {
+                if (t_info.category != .Struct and t_info.category != .Enum and t_info.category != .Union) {
+                    @compileError("Template " ++ reflect.getSimpleTypeName(Tpl) ++ "' cannot be created from " ++ @tagName(t_info.category) ++ " types");
+                }
 
-        if (t_info.hasDecl("TemplateType")) return Tpl;
+                if (t_info.hasDecl("TemplateType")) return Tpl;
+            },
+            else => {},
+        }
     }
 
     return struct {
-        fn getTplInfo() reflect.TypeInfo {
-            return reflect.getTypeInfo(Tpl);
+        fn getInfo() reflect.ReflectInfo {
+            return reflect.getInfo(Tpl);
         }
 
         pub const Name = blk: {
@@ -61,12 +68,12 @@ pub inline fn Template(comptime Tpl: type) type {
                     @compileError(@typeName(Tpl) ++ " 'Name' must be []const u8");
                 }
             }
-            const t_info = reflect.getTypeInfo(Tpl);
+            const t_info = reflect.getInfo(Tpl).type;
             break :blk t_info.toStringEx(true);
         };
 
         fn resolveTemplateType(comptime T: type) type {
-            const t_info = reflect.getTypeInfo(T);
+            const t_info = reflect.getInfo(T).type;
             const func_names = t_info.getFuncNames();
             if (func_names.len == 0) return T;
 
@@ -253,9 +260,10 @@ pub inline fn Template(comptime Tpl: type) type {
             const Implementation = implementationType;
 
             comptime {
+                const t_info = getInfo().type;
                 const impl_info = reflect.TypeInfo.from(Implementation);
-                const func_names = getTplInfo().getFuncNames();
-                const tmpl_struct_fields = getTplInfo().fields;
+                const func_names = t_info.getFuncNames();
+                const tmpl_struct_fields = t_info.fields;
 
                 var missing_methods: []const []const u8 = &.{};
 
@@ -273,7 +281,7 @@ pub inline fn Template(comptime Tpl: type) type {
                 }
 
                 for (func_names) |method_name| {
-                    const tmpl_func_info = getTplInfo().getFunc(method_name) orelse {
+                    const tmpl_func_info = t_info.getFunc(method_name) orelse {
                         @compileError("We should not be seeing this at all");
                     };
                     const impl_func_info = impl_info.getFunc(method_name);
@@ -542,8 +550,8 @@ pub inline fn Template(comptime Tpl: type) type {
         /// Get the struct type representing the vtable for a given implementation.
         fn VTableType(comptime Implementation: type) type {
             if (Implementation == TemplateType) return TemplateType;
-            const template_info = comptime reflect.getTypeInfo(Tpl);
-            const impl_info = comptime reflect.getTypeInfo(Implementation);
+            const template_info = comptime reflect.getInfo(Tpl).type;
+            const impl_info = comptime reflect.getInfo(Implementation).type;
             const func_names = template_info.getFuncNames();
             const tmpl_struct_fields = template_info.fields;
 
@@ -570,8 +578,8 @@ pub inline fn Template(comptime Tpl: type) type {
             break :blk VTableType(Implementation);
         } {
             return comptime blk: {
-                const template_info = reflect.getTypeInfo(Tpl);
-                const impl_info = reflect.getTypeInfo(Implementation);
+                const template_info = reflect.getInfo(Tpl).type;
+                const impl_info = reflect.getInfo(Implementation).type;
                 const func_names = template_info.getFuncNames();
                 const tmpl_struct_fields = template_info.fields;
 
@@ -655,7 +663,7 @@ pub fn Templates(comptime TemplateTypes: []const type) type {
         var all_fields: []const std.builtin.Type.StructField = &.{};
         for (TemplateTypes) |Tpl| {
             const template_type = if (@hasDecl(Tpl, "TemplateType")) Tpl.TemplateType else Tpl;
-            const template_info = reflect.getTypeInfo(template_type);
+            const template_info = reflect.getInfo(template_type).type;
             const func_names = template_info.getFuncNames();
             const tmpl_struct_fields = template_info.fields;
 
@@ -846,7 +854,7 @@ test "Interfaces.TemplateVTable" {
     const Comp = Templates(&[_]type{ Template(A), Template(B) });
     const vt = Comp.TemplateType;
     try std.testing.expectEqual(2, @typeInfo(vt).@"struct".fields.len);
-    const type_info = comptime reflect.getTypeInfo(Comp.TemplateType);
+    const type_info = comptime reflect.getInfo(Comp.TemplateType).type;
     std.debug.print("TemplateVTable Type:\n", .{});
     std.debug.print("{s}\n", .{type_info.toStringEx(true)});
     inline for (type_info.fields) |field| {
