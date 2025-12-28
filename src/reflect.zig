@@ -1045,10 +1045,33 @@ fn lazyGetDeclNames(comptime T: type, comptime mode: DeclNameMode) []const []con
 /// Only processes the requested decl, avoiding comptime explosion.
 fn lazyGetDecl(comptime T: type, comptime decl_name: []const u8) ?TypeInfo {
     const zig_type_info = @typeInfo(T);
+    switch (zig_type_info) {
+        .pointer => return lazyGetDecl(zig_type_info.pointer.child, decl_name),
+        .optional => return lazyGetDecl(zig_type_info.optional.child, decl_name),
+
+        .bool,
+        .int,
+        .float,
+        .void,
+        .comptime_int,
+        .comptime_float,
+        .noreturn,
+        .enum_literal,
+        .undefined,
+        .null,
+        .error_set,
+        .error_union,
+        .array,
+        .vector,
+        .type,
+        => {
+            return null;
+        },
+        else => {},
+    }
     if (zig_type_info == .pointer) {
         return lazyGetDecl(zig_type_info.pointer.child, decl_name);
     }
-
     if (!@hasDecl(T, decl_name)) {
         return null;
     }
@@ -1080,7 +1103,14 @@ fn lazyGetDecl(comptime T: type, comptime decl_name: []const u8) ?TypeInfo {
 fn lazyGetFunc(type_info: *const TypeInfo, comptime func_name: []const u8) ?FuncInfo {
     const zig_type_info = @typeInfo(type_info.type);
     if (zig_type_info == .pointer) {
-        return lazyGetFunc(zig_type_info.pointer.child, func_name);
+        const pointee_info = comptime TypeInfo.from(zig_type_info.pointer.child);
+        return lazyGetFunc(&pointee_info, func_name);
+    }
+
+    // Check if this type can have declarations before calling @hasDecl
+    switch (zig_type_info) {
+        .@"struct", .@"union", .@"enum", .@"opaque" => {},
+        else => return null,
     }
 
     if (!@hasDecl(type_info.type, func_name)) {
@@ -2145,4 +2175,89 @@ test "reflect - optional and array types distinct from base type" {
     // Verify cached lookups work correctly
     const optional_info2 = comptime getInfo(?BaseType);
     try std.testing.expect(optional_info.eql(&optional_info2));
+}
+
+test "reflect - lazyGetDecl returns null for non-struct types" {
+    // Test that lazyGetDecl correctly returns null for all @typeInfo kinds
+    // that don't support declarations
+
+    // Primitive types
+    try std.testing.expectEqual(@as(?TypeInfo, null), comptime lazyGetDecl(bool, "someDecl"));
+    try std.testing.expectEqual(@as(?TypeInfo, null), comptime lazyGetDecl(i32, "someDecl"));
+    try std.testing.expectEqual(@as(?TypeInfo, null), comptime lazyGetDecl(u64, "someDecl"));
+    try std.testing.expectEqual(@as(?TypeInfo, null), comptime lazyGetDecl(f32, "someDecl"));
+    try std.testing.expectEqual(@as(?TypeInfo, null), comptime lazyGetDecl(f64, "someDecl"));
+
+    // Void and special types
+    try std.testing.expectEqual(@as(?TypeInfo, null), comptime lazyGetDecl(void, "someDecl"));
+    try std.testing.expectEqual(@as(?TypeInfo, null), comptime lazyGetDecl(type, "someDecl"));
+    try std.testing.expectEqual(@as(?TypeInfo, null), comptime lazyGetDecl(noreturn, "someDecl"));
+
+    // Array and vector types
+    try std.testing.expectEqual(@as(?TypeInfo, null), comptime lazyGetDecl([5]u8, "someDecl"));
+    try std.testing.expectEqual(@as(?TypeInfo, null), comptime lazyGetDecl(@Vector(4, f32), "someDecl"));
+
+    // Error types
+    try std.testing.expectEqual(@as(?TypeInfo, null), comptime lazyGetDecl(anyerror, "someDecl"));
+
+    // Pointer types (should delegate to pointee, which for primitives returns null)
+    try std.testing.expectEqual(@as(?TypeInfo, null), comptime lazyGetDecl(*u32, "someDecl"));
+    try std.testing.expectEqual(@as(?TypeInfo, null), comptime lazyGetDecl(?*u32, "someDecl"));
+
+    // Optional types (should delegate to child, which for primitives returns null)
+    try std.testing.expectEqual(@as(?TypeInfo, null), comptime lazyGetDecl(?u32, "someDecl"));
+}
+
+test "reflect - lazyGetDecl works for struct types" {
+    const TestStruct = struct {
+        pub const InnerType = u32;
+        pub const AnotherType = struct { value: i32 };
+    };
+
+    // Should find type declarations
+    const inner_type = comptime lazyGetDecl(TestStruct, "InnerType");
+    try std.testing.expect(inner_type != null);
+    try std.testing.expectEqual(TypeInfo.Category.Primitive, inner_type.?.category);
+
+    const another_type = comptime lazyGetDecl(TestStruct, "AnotherType");
+    try std.testing.expect(another_type != null);
+    try std.testing.expectEqual(TypeInfo.Category.Struct, another_type.?.category);
+
+    // Should return null for non-existent declarations
+    try std.testing.expectEqual(@as(?TypeInfo, null), comptime lazyGetDecl(TestStruct, "NonExistent"));
+
+    // Should return null for functions (not declarations)
+    try std.testing.expectEqual(@as(?TypeInfo, null), comptime lazyGetDecl(TestStruct, "someFunc"));
+}
+
+test "reflect - lazyGetDecl pointer delegation" {
+    const TestStruct = struct {
+        pub const InnerType = u32;
+    };
+
+    // Pointer to struct should delegate to the struct
+    const ptr_inner = comptime lazyGetDecl(*TestStruct, "InnerType");
+    try std.testing.expect(ptr_inner != null);
+    try std.testing.expectEqual(TypeInfo.Category.Primitive, ptr_inner.?.category);
+
+    // Optional pointer to struct should also delegate
+    const opt_ptr_inner = comptime lazyGetDecl(?*TestStruct, "InnerType");
+    try std.testing.expect(opt_ptr_inner != null);
+    try std.testing.expectEqual(TypeInfo.Category.Primitive, opt_ptr_inner.?.category);
+}
+
+test "reflect - lazyGetFunc pointer delegation" {
+    const TestStruct = struct {
+        pub fn testMethod(self: *@This()) void {
+            _ = self;
+        }
+    };
+
+    // Test that TypeInfo.hasFunc works for pointer types
+    const ptr_type_info = comptime TypeInfo.from(*TestStruct);
+    try std.testing.expect(ptr_type_info.hasFunc("testMethod"));
+
+    // Pointer to primitive should not have methods
+    const prim_ptr_type_info = comptime TypeInfo.from(*u32);
+    try std.testing.expect(!prim_ptr_type_info.hasFunc("someMethod"));
 }
