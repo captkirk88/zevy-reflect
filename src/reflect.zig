@@ -912,7 +912,7 @@ pub const ReflectInfo = union(enum) {
 
     pub fn hash(self: *const ReflectInfo) u64 {
         switch (self.*) {
-            .type_info => |ti| return ti.hash,
+            .type => |ti| return ti.hash,
             .raw => return typeHash(self.raw),
             .func => |fi| return fi.hash,
         }
@@ -920,7 +920,7 @@ pub const ReflectInfo = union(enum) {
 
     pub fn name(self: *const ReflectInfo) []const u8 {
         switch (self.*) {
-            .type_info => |ti| return ti.name,
+            .type => |ti| return ti.name,
             .raw => return @typeName(self.raw),
             .func => |fi| return fi.name,
         }
