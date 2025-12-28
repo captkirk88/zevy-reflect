@@ -219,13 +219,14 @@ pub const FuncInfo = struct {
     /// Create FuncInfo for a method of a struct given the struct's TypeInfo and method name
     fn fromMethod(comptime type_info: *const TypeInfo, comptime func_name: []const u8) ?FuncInfo {
         const ti = @typeInfo(type_info.type);
-        if (type_info.category != .Struct or type_info.category != .Union or type_info.category != .Enum) {
+        // Only struct/union/enum containers support methods
+        if (type_info.category != .Struct and type_info.category != .Union and type_info.category != .Enum and type_info.category != .Opaque) {
             return null;
         }
 
         inline for (_getDecls(ti)) |decl| {
             if (std.mem.eql(u8, decl.name, func_name)) {
-                const DeclType = @TypeOf(@field(type_info.type, decl.name));
+                const DeclType: type = @TypeOf(@field(type_info.type, decl.name));
                 const fn_type_info = @typeInfo(DeclType);
                 if (fn_type_info != .@"fn") {
                     @compileError(std.fmt.comptimePrint(
@@ -234,15 +235,15 @@ pub const FuncInfo = struct {
                     ));
                 }
 
-                var param_infos: [fn_type_info.@"fn".params.len]ReflectInfo = undefined;
+                var param_infos: [fn_type_info.@"fn".params.len]ParamInfo = undefined;
                 var pi_i: usize = 0;
                 inline for (fn_type_info.@"fn".params) |param| {
                     const p_t = param.type orelse void;
-                    param_infos[pi_i] = .{ .raw = p_t };
+                    param_infos[pi_i] = ParamInfo{ .info = ReflectInfo{ .raw = p_t }, .is_noalias = false, .is_comptime = false };
                     pi_i += 1;
                 }
 
-                const return_ref: ReflectInfo = .{ .raw = fn_type_info.@"fn".return_type.? };
+                const return_ref: ReflectInfo = if (fn_type_info.@"fn".return_type) |r| ReflectInfo{ .raw = r } else ReflectInfo.unknown;
 
                 return FuncInfo{
                     .hash = typeHash(DeclType),
@@ -276,27 +277,66 @@ pub const FuncInfo = struct {
         const FuncType = @TypeOf(func);
         const ArgsType = @TypeOf(args);
         const args_info = @typeInfo(ArgsType);
-        const arg_len = switch (args_info) {
-            .@"struct" => |s| blk: {
-                if (!s.is_tuple) @compileError("FuncInfo.invoke expects a tuple of arguments");
-                break :blk s.fields.len;
-            },
-            else => @compileError("FuncInfo.invoke expects a tuple of arguments"),
+
+        // Support either a tuple of args (typical .{...}) or a single non-tuple value
+        var arg_len: usize = 0;
+        const args_is_tuple = switch (args_info) {
+            .@"struct" => |s| s.is_tuple,
+            else => false,
         };
-        if (arg_len != self.params.len) {
-            @compileError("FuncInfo.invoke argument count mismatch");
+        if (args_is_tuple) {
+            const s = switch (args_info) {
+                .@"struct" => |s| s,
+                else => unreachable,
+            };
+            arg_len = s.fields.len;
+        } else {
+            // Non-struct args are treated as a single argument value
+            arg_len = 1;
         }
+
+        // Ensure argument count matches (will assert at runtime)
+        std.debug.assert(arg_len == self.params.len);
 
         var typed_args: std.meta.ArgsTuple(FuncType) = undefined;
 
         inline for (self.params, 0..) |param, i| {
-            const ParamType = switch (param.info) {
-                .type => |ti| ti.type,
-                .raw => |t| t,
-                .func => |fi| fi.type.type,
+            const param_info = param.info;
+            typed_args[i] = blk: switch (param_info) {
+                .type => |ti| {
+                    if (ti.category == .Pointer) {
+                        if (args_is_tuple) {
+                            break :blk @as(ti.type, args[i]);
+                        } else {
+                            // Single arg case
+                            break :blk @as(ti.type, args);
+                        }
+                    } else {
+                        if (args_is_tuple) {
+                            break :blk @as(ti.type, args[i]);
+                        } else {
+                            // Single arg case
+                            break :blk @as(ti.type, args);
+                        }
+                    }
+                },
+                .func => |fi| {
+                    if (args_is_tuple) {
+                        break :blk @as(fi.type.type, args[i]);
+                    } else {
+                        // Single arg case
+                        break :blk @as(fi.type.type, args);
+                    }
+                },
+                .raw => |ty| {
+                    if (args_is_tuple) {
+                        break :blk @as(ty, args[i]);
+                    } else {
+                        // Single arg case
+                        break :blk @as(ty, args);
+                    }
+                },
             };
-
-            typed_args[i] = @as(ParamType, args[i]);
         }
 
         return @call(.auto, func, typed_args);
@@ -532,6 +572,7 @@ pub const TypeInfo = struct {
         Slice,
         Vector,
         Pointer,
+        Opaque,
         Optional,
         Func,
         Primitive,
@@ -544,6 +585,7 @@ pub const TypeInfo = struct {
                 .@"struct" => .Struct,
                 .@"enum" => .Enum,
                 .@"union" => .Union,
+                .@"opaque" => .Opaque,
                 .array, .vector => .Slice,
                 .pointer => .Pointer,
                 .optional => .Optional,
@@ -1113,29 +1155,22 @@ fn lazyGetFunc(type_info: *const TypeInfo, comptime func_name: []const u8) ?Func
         else => return null,
     }
 
-    if (!@hasDecl(type_info.type, func_name)) {
-        return null;
+    // Look up the declaration by name manually to avoid visibility issues with @hasDecl
+    const decls = _getDecls(@typeInfo(type_info.type));
+    var found: ?std.builtin.Type.Declaration = null;
+    inline for (decls) |decl| {
+        if (std.mem.eql(u8, decl.name, func_name)) {
+            found = decl;
+            break;
+        }
     }
+    if (found == null) return null;
 
-    const FuncType = @TypeOf(@field(type_info.type, func_name));
+    const FuncType = @TypeOf(@field(type_info.type, found.?.name));
     const func_type_info = @typeInfo(FuncType);
 
     if (func_type_info != .@"fn") {
         return null;
-    }
-
-    // Check for unsupported parameter types
-    inline for (func_type_info.@"fn".params) |param| {
-        if (param.type) |pt| {
-            const pt_info = @typeInfo(pt);
-            if (pt_info == .@"opaque") {
-                return null;
-            }
-            // Allow pointer to opaque (e.g., *anyopaque)
-        } else {
-            // anytype parameter - can't reflect
-            return null;
-        }
     }
 
     // Build FuncInfo for this specific function
@@ -1254,9 +1289,7 @@ pub fn getDecls(type_info: *TypeInfo) []TypeInfo {
 }
 
 /// Check if a struct has a function with the given name
-///
-/// *Must be called at comptime.*
-pub fn hasFunc(comptime T: type, comptime func_name: []const u8) bool {
+pub inline fn hasFunc(comptime T: type, comptime func_name: []const u8) bool {
     return hasFuncWithArgs(T, func_name, null);
 }
 
@@ -1264,10 +1297,8 @@ pub fn hasFunc(comptime T: type, comptime func_name: []const u8) bool {
 ///
 /// If arg_types is null, only the function name is checked.
 /// If `func_name` is a method of `T` you do not need to include the self reference.
-///
-/// *Must be called at comptime.*
-pub fn hasFuncWithArgs(comptime T: type, comptime func_name: []const u8, comptime arg_types: ?[]const type) bool {
-    return verifyFuncWithArgs(T, func_name, arg_types) catch false;
+pub inline fn hasFuncWithArgs(comptime T: type, comptime func_name: []const u8, comptime arg_types: ?[]const type) bool {
+    return comptime verifyFuncWithArgs(T, func_name, arg_types) catch false;
 }
 
 /// Verify that a struct has a function with the given name and argument types.
@@ -2074,6 +2105,10 @@ test "FuncInfo.invoke calls function" {
         pub fn addOne(value: *i32) i32 {
             return value.* + 1;
         }
+
+        pub fn inc(self: *@This()) void {
+            _ = self;
+        }
     };
 
     const ti = comptime TypeInfo.from(Target);
@@ -2084,6 +2119,14 @@ test "FuncInfo.invoke calls function" {
 
     try std.testing.expectEqual(@as(i32, 42), result);
     std.debug.print("invoked: {s}\n", .{fi.toString()});
+
+    // Also test method invoke using a single non-tuple arg and tuple form
+    const inc_fi = ti.getFunc("inc").?;
+    var t = Target{};
+    // tuple form
+    inc_fi.invoke(.{&t});
+    // single-arg form (non-tuple)
+    inc_fi.invoke(&t);
 }
 
 test "FuncInfo.toPtr" {
