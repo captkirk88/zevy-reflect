@@ -1,5 +1,5 @@
 const std = @import("std");
-const config = @import("config");
+const config = @import("zevy_reflect_config");
 const util = @import("utils.zig");
 
 /// Global seed for type hashing - configurable via build.zig

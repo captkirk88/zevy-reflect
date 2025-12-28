@@ -7,7 +7,12 @@
 
     .minimum_zig_version = "0.15.1",
 
-    .dependencies = .{},
+    .dependencies = .{
+        .zevy_buildtools = .{
+            .url = "git+https://github.com/captkirk88/zevy-buildtools#5c014d9e4f28bf3a93b5bb9a73a90d63e528afc1",
+            .hash = "zevy_buildtools-0.0.0-So808XBtAACeujL5UHvy5ZPzSARXoTKcRoKHMHZ8k28Q",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",

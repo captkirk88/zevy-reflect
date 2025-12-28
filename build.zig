@@ -1,4 +1,5 @@
 const std = @import("std");
+const buildtools = @import("zevy_buildtools");
 
 /// Code generation utilities.
 pub const codegen = @import("src/codegen/root.zig");
@@ -25,7 +26,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    mod.addImport("config", config_module);
+    // Use a unique import name to avoid collisions when this package is a dependency
+    mod.addImport("zevy_reflect_config", config_module);
 
     const mod_tests = b.addTest(.{
         .root_module = mod,
