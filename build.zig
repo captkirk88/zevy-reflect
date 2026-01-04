@@ -41,4 +41,8 @@ pub fn build(b: *std.Build) !void {
     buildtools.fetch.addFetchStep(b, b.path("build.zig.zon")) catch |err| {
         return err;
     };
+
+    buildtools.deps.addDepsStep(b) catch |err| {
+        return err;
+    };
 }
