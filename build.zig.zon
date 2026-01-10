@@ -1,7 +1,7 @@
 .{
     .name = .zevy_reflect,
 
-    .version = "0.0.1",
+    .version = "0.1.0",
 
     .fingerprint = 0xac92e58cc6d82cf1, // Changing this has security and trust implications.
 
