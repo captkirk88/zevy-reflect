@@ -1,20 +1,41 @@
 const std = @import("std");
 const interf = @import("interface.zig");
 
+/// An interface template that is for the common equality check of a type
 pub const Equal = interf.Template(struct {
     pub fn eql(_: *const @This(), _: *const @This()) bool {
         unreachable;
     }
 });
 
+/// An interface template that is for the common hashing of a type
 pub const Hashable = interf.Template(struct {
     pub fn hash(_: *const @This()) u64 {
         unreachable;
     }
 });
 
+/// An interface template that is for the common comparison of two types
+///
 pub const Comparable = interf.Template(struct {
     pub fn cmp(_: *const @This(), _: *const @This()) std.math.Order {
+        unreachable;
+    }
+});
+
+/// An interface template that combines Comparable and Equal
+pub const ComparableOrEqual = interf.Templates(&[_]type{ Comparable, Equal });
+
+/// An interface template that is for the common formatting of a type
+///
+/// *Give {f} some love!*
+///
+/// **When using interface instances (e.g., interface.ptr), std.fmt's {f} formatting
+/// may not work due to method resolution on pointer types. Use the underlying value directly
+/// for reliable {f} formatting and use the template to validate `format` exists.**
+pub const Format = interf.Template(struct {
+    pub fn format(_: *const @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
+        _ = writer;
         unreachable;
     }
 });
@@ -52,15 +73,25 @@ test {
         pub fn extra() void {
             std.debug.print("extra called\n", .{});
         }
+
+        pub fn format(this: *const @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
+            try writer.print("MyType {{ a: {}, b: {} }}", .{ this.a, this.b });
+        }
     };
 
     var obj1 = MyType{ .a = 1, .b = 2 };
     var obj2 = MyType{ .a = 1, .b = 3 };
-    const Combined = interf.Templates(&[_]type{ Equal, Hashable, Comparable, Extra });
+    const Combined = interf.Templates(&[_]type{ Equal, Hashable, Comparable, Extra, Format });
 
     var interface: Combined.Interface = undefined;
     Combined.populate(&interface, &obj1);
     //const interface = Combined.interface(MyType, obj1);
     try std.testing.expect(interface.vtable.eql(interface.ptr, &obj2) == false);
     try std.testing.expect(interface.vtable.hash(interface.ptr) != interface.vtable.hash(&obj2));
+
+    try std.testing.expect(interface.vtable.cmp(interface.ptr, &obj2) == .lt);
+
+    const result = std.fmt.allocPrint(std.testing.allocator, "{f}", .{obj1}) catch unreachable;
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("MyType { a: 1, b: 2 }", result);
 }

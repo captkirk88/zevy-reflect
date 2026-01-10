@@ -9,6 +9,8 @@ A lightweight reflection and change detection library for Zig.
 - **Runtime Type Information**: Get detailed type information at runtime including fields, functions, and nested types
 - **Interface Validation**: Compile-time validation of interface implementations with clear error messages
     - **VTable Generation**: Create vtables for dynamic dispatch based on interfaces, with support for interface extension. Tested using std.mem.Allocation.VTable interface.
+- **Function Verification**: Compile-time validation of function signatures with dynamic error reporting for type mismatches
+- **Dynamic Error Types**: Utilities for creating error sets with dynamic names at comptime
 - **Change Detection**: Track changes to struct fields with minimal memory overhead (8 bytes)
 - **Zero Dependencies**: Pure Zig implementation with no external dependencies
 
@@ -24,7 +26,7 @@ Then in your `build.zig`:
 
 ```zig
 const zevy_reflect = b.dependency("zevy_reflect", .{
-    .branch_quota = 20000, // Optional: increase eval branch quota for complex reflection (default: 10000)
+    .branch_quota = 1_000_000, // adjust as needed
 });
 exe.root_module.addImport("zevy_reflect", zevy_reflect.module("zevy_reflect"));
 ```
@@ -33,7 +35,7 @@ exe.root_module.addImport("zevy_reflect", zevy_reflect.module("zevy_reflect"));
 
 ### Reflection
 
-This library provides both lightweight (shallow) runtime `TypeInfo` and a small set of helpers to query type structure without blowing up comptime.
+This library provides both lightweight (shallow) runtime `ReflectInfo` and a small set of helpers to query type structure.
 
 ```zig
 const reflect = @import("zevy_reflect");
@@ -48,7 +50,7 @@ const MyStruct = struct {
 };
 
 comptime {
-    const info = reflect.getTypeInfo(MyStruct);
+    const info = reflect.getReflectInfo(MyStruct);
     std.debug.print("Name: {s}, Size: {d}\n", .{ info.name, info.size });
 
     // Field checks (comptime-safe helpers):
@@ -60,22 +62,34 @@ comptime {
     inline for (fields) |f| std.debug.print("field: {s}\n", .{ f });
 }
 
-// Runtime: use TypeInfo to introspect dynamic metadata (shallow info avoids recursion)
-const ti = reflect.getTypeInfo(MyStruct);
+// Runtime: use ReflectInfo to introspect dynamic metadata
+const ti = reflect.getReflectInfo(MyStruct);
 std.debug.print("Runtime fields: {d}\n", .{ ti.fields.len });
-
-// Construct a value using `TypeInfo.new` from a tuple literal (comptime API)
-comptime {
-    const ti_comp = reflect.getTypeInfo(MyStruct);
-    const instance_default = ti_comp.new(.{});
-    const instance_override = ti_comp.new(.{ .id = 10, .name = "bob" });
-    try std.testing.expectEqual(@as(u32, 10), instance_override.id);
-}
 ```
 
 Notes:
-- `getTypeInfo` returns shallow field and function metadata suitable for runtime use.
-- `TypeInfo.new` is a comptime helper that constructs values from tuple literals; useful for code generation and tests.
+- `getReflectInfo` returns shallow field and function metadata suitable for runtime use.
+
+### Utilities
+
+The library provides various utility functions for advanced reflection and error handling:
+
+```zig
+const reflect = @import("zevy_reflect");
+
+// Create dynamic error sets
+const MyError = reflect.utils.DynamicError("CustomError");
+const err = MyError.CustomError;
+
+// Append errors to existing sets
+const ExtendedError = reflect.utils.MergeDynamicError(error{ Base }, "Dynamic");
+
+// Verify function signatures with detailed type mismatch errors
+comptime {
+    try std.testing.expect(comptime reflect.verifyFuncWithArgs(MyStruct, "getId", &[_]type{}, null) catch false);
+    // Type mismatches generate specific errors like "IncorrectArgAt_0_Expected_i32_Got_f32"
+}
+```
 
 ### Interface Validation and VTable
 

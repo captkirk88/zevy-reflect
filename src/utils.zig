@@ -168,7 +168,7 @@ test "getPublicTypes - primitive type" {
     try std.testing.expect(result == null);
 }
 
-test "makeDynamicError" {
+test "DynamicError" {
     const MyError = DynamicError("Foo");
     const err = MyError.Foo;
     try std.testing.expect(@TypeOf(err) == MyError);
@@ -176,7 +176,7 @@ test "makeDynamicError" {
     try std.testing.expectEqualStrings("Foo", name);
 }
 
-test "appendDynamicError" {
+test "MergeDynamicError" {
     const BaseError = error{ A, B };
     const Appended = MergeDynamicError(BaseError, "C");
     const errC = Appended.C;
