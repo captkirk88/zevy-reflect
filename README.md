@@ -93,7 +93,9 @@ comptime {
 
 ### Interface Validation and VTable
 
-`Template(...)` provides a compile-time validator and a typed vtable generator. Useful when you want an explicit interface and a vtable for dynamic dispatch. You can also obtain a convenience bound interface instance with `Template.interface(ImplType, &instance)`.
+`Template(...)` provides a compile-time validator and a typed vtable generator. Useful when you want an explicit interface and a vtable for dynamic dispatch. `Template(...).Interface` is the interface type.
+
+```zig
 
 This is a different approach to interfaces in Zig.  Hopefully more useful and generally easier to integrate.
 
