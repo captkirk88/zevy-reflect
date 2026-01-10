@@ -71,6 +71,21 @@ pub fn getPublicTypes(comptime T: type) ?struct {
     return .{ .names = &names, .types = &types };
 }
 
+/// Create a dynamic error set with a single error whose name is given by the comptime string.
+pub fn DynamicError(comptime name: [:0]const u8) type {
+    return @Type(.{
+        .error_set = &[_]std.builtin.Type.Error{
+            .{ .name = name },
+        },
+    });
+}
+
+/// Append a dynamic error to an existing error set, returning the merged error set.
+pub fn MergeDynamicError(comptime BaseError: type, comptime dynamic_error_name: [:0]const u8) type {
+    const MergedDynamicError = DynamicError(dynamic_error_name);
+    return BaseError || MergedDynamicError;
+}
+
 test "isGeneric - primitive type" {
     try std.testing.expect(!isGeneric(u32));
 }
@@ -151,6 +166,24 @@ test "getPublicTypes - no public types" {
 test "getPublicTypes - primitive type" {
     const result = getPublicTypes(u32);
     try std.testing.expect(result == null);
+}
+
+test "makeDynamicError" {
+    const MyError = DynamicError("Foo");
+    const err = MyError.Foo;
+    try std.testing.expect(@TypeOf(err) == MyError);
+    const name = @errorName(err);
+    try std.testing.expectEqualStrings("Foo", name);
+}
+
+test "appendDynamicError" {
+    const BaseError = error{ A, B };
+    const Appended = MergeDynamicError(BaseError, "C");
+    const errC = Appended.C;
+    try std.testing.expect(@TypeOf(errC) == Appended);
+    try std.testing.expectEqualStrings("C", @errorName(errC));
+    const errA = Appended.A;
+    try std.testing.expectEqualStrings("A", @errorName(errA));
 }
 
 fn Gen(comptime T: type) type {

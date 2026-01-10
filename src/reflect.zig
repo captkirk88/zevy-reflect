@@ -1298,7 +1298,15 @@ pub inline fn hasFunc(comptime T: type, comptime func_name: []const u8) bool {
 /// If arg_types is null, only the function name is checked.
 /// If `func_name` is a method of `T` you do not need to include the self reference.
 pub inline fn hasFuncWithArgs(comptime T: type, comptime func_name: []const u8, comptime arg_types: ?[]const type) bool {
-    return comptime verifyFuncWithArgs(T, func_name, arg_types) catch false;
+    return comptime verifyFuncWithArgs(T, func_name, arg_types, null) catch false;
+}
+
+/// Check if a struct has a function with the given name, argument types, and return type.
+///
+/// If arg_types is null, only the function name and return type are checked.
+/// If `func_name` is a method of `T` you do not need to include the self reference.
+pub inline fn hasFuncWithArgsAndReturn(comptime T: type, comptime func_name: []const u8, comptime arg_types: ?[]const type, return_type: type) bool {
+    return comptime verifyFuncWithArgs(T, func_name, arg_types, return_type) catch false;
 }
 
 /// Verify that a struct has a function with the given name and argument types.
@@ -1315,12 +1323,16 @@ pub inline fn hasFuncWithArgs(comptime T: type, comptime func_name: []const u8, 
 ///
 /// If `func_name` is a method of `T` you do not need to include the self reference.
 ///
+/// If `return_type` is provided, it is also checked for a match.
+///
+/// Error variants for incorrect argument types include the expected and actual types in the error name, e.g., `IncorrectType_Expected_i32_Got_f32`.
+///
 /// *Must be called at comptime.*
-pub fn verifyFuncWithArgs(comptime T: type, comptime func_name: []const u8, comptime arg_types: ?[]const type) error{ NotAFunction, FuncDoesNotExist, IncorrectArgs }!bool {
+pub fn verifyFuncWithArgs(comptime T: type, comptime func_name: []const u8, comptime arg_types: ?[]const type, comptime return_type: ?type) anyerror!bool {
     const type_info = @typeInfo(T);
     if (type_info == .pointer) {
         const Child = type_info.pointer.child;
-        return verifyFuncWithArgs(Child, func_name, arg_types);
+        return verifyFuncWithArgs(Child, func_name, arg_types, return_type);
     } else if (type_info == .@"struct") {
         if (!@hasDecl(T, func_name)) return error.FuncDoesNotExist;
 
@@ -1343,13 +1355,20 @@ pub fn verifyFuncWithArgs(comptime T: type, comptime func_name: []const u8, comp
 
             inline for (0..at.len) |i| {
                 if (fn_type.@"fn".params[start_idx + i].type != at[i]) {
-                    return error.IncorrectArgs;
+                    const expected = fn_type.@"fn".params[start_idx + i].type;
+                    const actual = at[i];
+                    const error_name = std.fmt.comptimePrint("IncorrectArgAt_{d}_Expected_{s}_Got_{s}", .{ i, getSimpleTypeName(expected.?), getSimpleTypeName(actual) });
+                    const DynamicError = util.DynamicError(error_name);
+                    return @field(DynamicError, error_name);
                 }
             }
-            return true;
-        } else {
-            return true;
         }
+
+        if (return_type) |rt| {
+            if (fn_type.@"fn".return_type != rt) return error.IncorrectArgs;
+        }
+
+        return true;
     }
     return false;
 }
@@ -1618,14 +1637,23 @@ test "verifyFuncWithArgs" {
         }
     };
 
-    try std.testing.expect(comptime verifyFuncWithArgs(TestStruct, "getValue", &[_]type{}) catch false);
-    try std.testing.expectError(error.IncorrectArgs, comptime verifyFuncWithArgs(TestStruct, "getValue", &[_]type{i32}));
+    try std.testing.expect(comptime verifyFuncWithArgs(TestStruct, "getValue", &[_]type{}, null) catch false);
+    try std.testing.expect(!(comptime verifyFuncWithArgs(TestStruct, "getValue", &[_]type{i32}, null) catch false));
 
-    try std.testing.expect(comptime verifyFuncWithArgs(TestStruct, "add", &[_]type{i32}) catch false);
-    try std.testing.expectError(error.IncorrectArgs, comptime verifyFuncWithArgs(TestStruct, "add", &[_]type{}));
-    try std.testing.expectError(error.IncorrectArgs, comptime verifyFuncWithArgs(TestStruct, "add", &[_]type{ i32, i32 }));
+    try std.testing.expect(comptime verifyFuncWithArgs(TestStruct, "add", &[_]type{i32}, null) catch false);
+    try std.testing.expect(!(comptime verifyFuncWithArgs(TestStruct, "add", &[_]type{}, null) catch false));
+    try std.testing.expect(!(comptime verifyFuncWithArgs(TestStruct, "add", &[_]type{ i32, i32 }, null) catch false));
 
-    try std.testing.expectError(error.FuncDoesNotExist, comptime verifyFuncWithArgs(TestStruct, "nonExistent", &[_]type{}));
+    try std.testing.expectError(error.FuncDoesNotExist, comptime verifyFuncWithArgs(TestStruct, "nonExistent", &[_]type{}, null));
+
+    // Test dynamic error for type mismatch
+    const mismatch_result = comptime verifyFuncWithArgs(TestStruct, "add", &[_]type{f32}, null);
+    if (mismatch_result) |_| {
+        try std.testing.expect(false); // should fail
+    } else |err| {
+        const name = @errorName(err);
+        try std.testing.expectEqualStrings("IncorrectArgAt_0_Expected_i32_Got_f32", name);
+    }
 }
 
 test "hasField" {
