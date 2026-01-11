@@ -1,16 +1,9 @@
 const std = @import("std");
-const config = @import("zevy_reflect_config");
 const util = @import("utils.zig");
-
-/// Global seed for type hashing - configurable via build.zig
-pub const HASH_SEED: u64 = config.hash_seed;
-
-/// Compile-time code execution quota limit
-pub const BRANCH_QUOTA: u32 = config.branch_quota;
 
 pub inline fn typeHash(comptime T: type) u64 {
     const name = @typeName(T);
-    return std.hash.Wyhash.hash(HASH_SEED, name);
+    return std.hash.Wyhash.hash(0, name);
 }
 
 pub inline fn typeHashWithSeed(comptime T: type, seed: u64) u64 {
@@ -19,7 +12,7 @@ pub inline fn typeHashWithSeed(comptime T: type, seed: u64) u64 {
 }
 
 pub inline fn hash(data: []const u8) u64 {
-    return std.hash.Wyhash.hash(HASH_SEED, data);
+    return std.hash.Wyhash.hash(0, data);
 }
 
 pub inline fn hashWithSeed(data: []const u8, seed: u64) u64 {
@@ -1209,7 +1202,7 @@ fn lazyGetFunc(type_info: *const TypeInfo, comptime func_name: []const u8) ?Func
 ///
 /// *Must be called at comptime*
 pub fn getInfo(comptime T: type) ReflectInfo {
-    @setEvalBranchQuota(BRANCH_QUOTA);
+    @setEvalBranchQuota(100_000);
     return comptime ReflectInfo.from(T);
 }
 

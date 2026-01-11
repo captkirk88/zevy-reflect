@@ -2,15 +2,9 @@
 //! https://github.com/captkirk88/zevy-reflect
 //!
 const std = @import("std");
-
 const reflect = @import("reflect.zig");
 const change = @import("change.zig");
 const interf = @import("interface.zig");
-
-/// Compile-time code execution quota limit
-///
-/// Adjustable via the `branch_quota` build option
-pub const BRANCH_QUOTA = reflect.BRANCH_QUOTA;
 
 // Code generation utilities
 pub const codegen = struct {

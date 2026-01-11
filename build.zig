@@ -8,25 +8,11 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const branch_quota_option = b.option(i32, "branch_quota", "Eval branch quota for reflection (default 100,000)") orelse 100_000;
-    const hash_seed_option = b.option(u64, "seed", "Seed for type hashing (default 0)") orelse 0;
-
-    const config_content = std.fmt.allocPrint(b.allocator, "pub const branch_quota = {};\npub const hash_seed: u64 = {};\n", .{ branch_quota_option, hash_seed_option }) catch unreachable;
-    const config = b.addWriteFile("zevy_reflect_config.zig", config_content);
-
-    const config_module = b.createModule(.{
-        .root_source_file = config.getDirectory().path(b, "zevy_reflect_config.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
     const mod = b.addModule("zevy_reflect", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{
-            .{ .name = "zevy_reflect_config", .module = config_module },
-        },
+        .imports = &.{},
     });
 
     const mod_tests = b.addTest(.{
@@ -41,6 +27,8 @@ pub fn build(b: *std.Build) !void {
     buildtools.fetch.addFetchStep(b, b.path("build.zig.zon")) catch |err| {
         return err;
     };
+
+    buildtools.fetch.addGetStep(b);
 
     buildtools.deps.addDepsStep(b) catch |err| {
         return err;
