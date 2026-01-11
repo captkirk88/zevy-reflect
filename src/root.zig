@@ -25,6 +25,10 @@ pub const templates = struct {
     pub const Equal = _common.Equal;
     pub const Hashable = _common.Hashable;
     pub const Comparable = _common.Comparable;
+    pub const ComparableOrEqual = _common.ComparableOrEqual;
+    pub const Format = _common.Format;
+    pub const Deinit = _common.Deinit;
+    pub const DeinitAlloc = _common.DeinitAlloc;
 };
 
 // Types

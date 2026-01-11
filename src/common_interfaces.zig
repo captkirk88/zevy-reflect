@@ -3,6 +3,7 @@ const interf = @import("interface.zig");
 
 /// An interface template that is for the common equality check of a type
 pub const Equal = interf.Template(struct {
+    pub const Name: []const u8 = "Equal";
     pub fn eql(_: *const @This(), _: *const @This()) bool {
         unreachable;
     }
@@ -10,6 +11,7 @@ pub const Equal = interf.Template(struct {
 
 /// An interface template that is for the common hashing of a type
 pub const Hashable = interf.Template(struct {
+    pub const Name: []const u8 = "Hash";
     pub fn hash(_: *const @This()) u64 {
         unreachable;
     }
@@ -18,6 +20,7 @@ pub const Hashable = interf.Template(struct {
 /// An interface template that is for the common comparison of two types
 ///
 pub const Comparable = interf.Template(struct {
+    pub const Name: []const u8 = "Comparable";
     pub fn cmp(_: *const @This(), _: *const @This()) std.math.Order {
         unreachable;
     }
@@ -28,14 +31,30 @@ pub const ComparableOrEqual = interf.Templates(&[_]type{ Comparable, Equal });
 
 /// An interface template that is for the common formatting of a type
 ///
-/// *Give {f} some love!*
-///
 /// **When using interface instances (e.g., interface.ptr), std.fmt's {f} formatting
 /// may not work due to method resolution on pointer types. Use the underlying value directly
 /// for reliable {f} formatting and use the template to validate `format` exists.**
 pub const Format = interf.Template(struct {
+    pub const Name: []const u8 = "Format";
     pub fn format(_: *const @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
         _ = writer;
+        unreachable;
+    }
+});
+
+/// An interface template that is for the common deinitialization of a type
+pub const Deinit = interf.Template(struct {
+    pub const Name: []const u8 = "Deinit";
+    pub fn deinit(_: *@This()) void {
+        unreachable;
+    }
+});
+
+/// An interface template that is for the common deinitialization of a type with allocator
+pub const DeinitAlloc = interf.Template(struct {
+    pub const Name: []const u8 = "DeinitAlloc";
+    pub fn deinit(_: *@This(), allocator: std.mem.Allocator) void {
+        _ = allocator;
         unreachable;
     }
 });
