@@ -1206,6 +1206,11 @@ pub fn getInfo(comptime T: type) ReflectInfo {
     return comptime ReflectInfo.from(T);
 }
 
+pub fn getInfoEx(comptime T: type, comptime branch_quota: u32) ReflectInfo {
+    @setEvalBranchQuota(branch_quota);
+    return comptime ReflectInfo.from(T);
+}
+
 /// Check if a struct has a nested struct, enum, or union with the given name
 ///
 /// Supports dot notation for nested structs (e.g., "Outer.Inner")
