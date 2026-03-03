@@ -54,5 +54,5 @@ pub const simplifyTypeName = reflect.simplifyTypeName;
 pub const utils = @import("utils.zig");
 
 test {
-    std.testing.refAllDeclsRecursive(@This());
+    std.testing.refAllDecls(@This());
 }

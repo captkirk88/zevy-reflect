@@ -3,14 +3,13 @@
 
     .version = "0.1.1",
 
-    .fingerprint = 0xac92e58cc6d82cf1, // Changing this has security and trust implications.
+    .fingerprint = 0xac92e58c7034bf39, // Changing this has security and trust implications.
 
     .minimum_zig_version = "0.15.1",
 
     .dependencies = .{
         .zevy_buildtools = .{
-            .url = "git+https://github.com/captkirk88/zevy-buildtools#561ed918d436408d0d2e41ec7d779a2aae3827ed",
-            .hash = "zevy_buildtools-0.0.0-So808V6LAAAVAZIE09gpma9MunuIWcGA5ElEK4i9K406",
+            .path = "../zevy-buildtools",
         },
     },
     .paths = .{

@@ -39,7 +39,7 @@ pub inline fn Template(comptime Tpl: type) type {
     // If Tpl is already a Template, return it directly
     {
         switch (reflect.getInfo(Tpl)) {
-            .func => |_| {
+            .func => {
                 @compileError("Template cannot be created from function types");
             },
             .type => |t_info| {
@@ -77,42 +77,36 @@ pub inline fn Template(comptime Tpl: type) type {
             const func_names = t_info.getFuncNames();
             if (func_names.len == 0) return T;
 
-            var fields: [func_names.len]std.builtin.Type.StructField = undefined;
+            var field_names: [func_names.len][:0]const u8 = undefined;
+            var field_types: [func_names.len]type = undefined;
+            var field_attrs: [func_names.len]std.builtin.Type.StructField.Attributes = undefined;
             for (func_names, 0..) |name, i| {
                 const func_info = t_info.getFunc(name);
                 if (func_info) |func| {
                     const PtrType = @TypeOf(func.toPtr());
                     const p = @typeInfo(PtrType).pointer;
                     const child = p.child;
-                    const new_child = substituteFunctionType(child, T, anyopaque);
-                    const NormalizedPtrType = @Type(.{ .pointer = .{
-                        .child = new_child,
-                        .is_const = p.is_const,
-                        .is_volatile = p.is_volatile,
-                        .is_allowzero = p.is_allowzero,
-                        .size = p.size,
-                        .alignment = p.alignment,
-                        .sentinel_ptr = p.sentinel_ptr,
-                        .address_space = p.address_space,
-                    } });
-                    fields[i] = .{
-                        .name = name[0..name.len :0],
-                        .type = NormalizedPtrType,
+                    const new_child = eraseSelfParam(child);
+                    const NormalizedPtrType = @Pointer(p.size, .{
+                        .@"const" = p.is_const,
+                        .@"volatile" = p.is_volatile,
+                        .@"allowzero" = p.is_allowzero,
+                        .@"align" = p.alignment,
+                        .@"addrspace" = p.address_space,
+                    }, new_child, null);
+                    field_names[i] = name[0..name.len :0];
+                    field_types[i] = NormalizedPtrType;
+                    field_attrs[i] = .{
+                        .@"comptime" = false,
+                        .@"align" = @alignOf(NormalizedPtrType),
                         .default_value_ptr = null,
-                        .is_comptime = false,
-                        .alignment = @alignOf(NormalizedPtrType),
                     };
                 } else {
                     @compileError("Template method info not found for '" ++ name ++ "'' in " ++ Name);
                 }
             }
 
-            return @Type(.{ .@"struct" = .{
-                .layout = .auto,
-                .fields = &fields,
-                .decls = &.{},
-                .is_tuple = false,
-            } });
+            return @Struct(.auto, null, &field_names, &field_types, &field_attrs);
         }
 
         pub const TemplateType = resolveTemplateType(Tpl);
@@ -121,22 +115,11 @@ pub inline fn Template(comptime Tpl: type) type {
         const _Interface = blk: {
             //const func_names = reflect.getTypeInfo(Tpl).getFuncNames();
             //const field_count = func_names.len + 2;
-            var fields: [2]std.builtin.Type.StructField = undefined;
-
-            fields[0] = .{
-                .name = "ptr",
-                .type = *Tpl,
-                .default_value_ptr = null,
-                .is_comptime = false,
-                .alignment = @alignOf(*Tpl),
-            };
-
-            fields[1] = .{
-                .name = "vtable",
-                .type = TemplateType,
-                .default_value_ptr = null,
-                .is_comptime = false,
-                .alignment = @alignOf(TemplateType),
+            var field_names: [2][:0]const u8 = .{ "ptr", "vtable" };
+            var field_types: [2]type = .{ *Tpl, TemplateType };
+            var field_attrs: [2]std.builtin.Type.StructField.Attributes = .{
+                .{ .@"comptime" = false, .@"align" = @alignOf(*Tpl), .default_value_ptr = null },
+                .{ .@"comptime" = false, .@"align" = @alignOf(TemplateType), .default_value_ptr = null },
             };
 
             // for (func_names, 0..) |func_name, i| {
@@ -150,12 +133,7 @@ pub inline fn Template(comptime Tpl: type) type {
             //     };
             // }
 
-            break :blk @Type(.{ .@"struct" = .{
-                .layout = .auto,
-                .fields = &fields,
-                .decls = &.{},
-                .is_tuple = false,
-            } });
+            break :blk @Struct(.auto, null, &field_names, &field_types, &field_attrs);
         };
 
         /// The interface type containing `ptr` and `vtable` fields.
@@ -517,34 +495,51 @@ pub inline fn Template(comptime Tpl: type) type {
             if (@typeInfo(T) == .pointer) {
                 const p = @typeInfo(T).pointer;
                 const child = p.child;
-                if (child == template_type) {
+                if (child == template_type or std.mem.eql(u8, @typeName(child), @typeName(template_type))) {
                     return if (p.is_const) *const impl_type else *impl_type;
                 }
             }
             return T;
         }
 
-        fn substituteFunctionType(comptime FnType: type, comptime template_type: type, comptime impl_type: type) type {
+        fn eraseSelfParam(comptime FnType: type) type {
             const fn_info = @typeInfo(FnType).@"fn";
-            var new_params: [fn_info.params.len]std.builtin.Type.Fn.Param = undefined;
+            var param_types: [fn_info.params.len]type = undefined;
+            var param_attrs: [fn_info.params.len]std.builtin.Type.Fn.Param.Attributes = undefined;
             for (fn_info.params, 0..) |param, i| {
                 const param_type = param.type.?;
-                const new_param_type = substituteTypeInType(param_type, template_type, impl_type);
-                new_params[i] = .{
-                    .is_generic = param.is_generic,
-                    .is_noalias = param.is_noalias,
-                    .type = new_param_type,
-                };
+                const new_param_type = if (i == 0 and @typeInfo(param_type) == .pointer) blk: {
+                    const p = @typeInfo(param_type).pointer;
+                    break :blk if (p.is_const) *const anyopaque else *anyopaque;
+                } else param_type;
+                param_types[i] = new_param_type;
+                param_attrs[i] = .{ .@"noalias" = param.is_noalias };
+            }
+            const new_return_type = if (fn_info.return_type) |rt| rt else null;
+            return @Fn(&param_types, &param_attrs, new_return_type, .{
+                .@"callconv" = fn_info.calling_convention,
+                .varargs = fn_info.is_var_args,
+            });
+        }
+
+        fn substituteFunctionType(comptime FnType: type, comptime template_type: type, comptime impl_type: type) type {
+            const fn_info = @typeInfo(FnType).@"fn";
+            var param_types: [fn_info.params.len]type = undefined;
+            var param_attrs: [fn_info.params.len]std.builtin.Type.Fn.Param.Attributes = undefined;
+            for (fn_info.params, 0..) |param, i| {
+                const param_type = param.type.?;
+                const new_param_type = if (i == 0 and impl_type == anyopaque and @typeInfo(param_type) == .pointer) blk: {
+                    const p = @typeInfo(param_type).pointer;
+                    break :blk if (p.is_const) *const impl_type else *impl_type;
+                } else substituteTypeInType(param_type, template_type, impl_type);
+                param_types[i] = new_param_type;
+                param_attrs[i] = .{ .@"noalias" = param.is_noalias };
             }
             const new_return_type = if (fn_info.return_type) |rt| substituteTypeInType(rt, template_type, impl_type) else null;
-            // TODO Zig 0.16+ replaced this with @Int, @Float, @Struct, etc.
-            return @Type(.{ .@"fn" = .{
-                .calling_convention = fn_info.calling_convention,
-                .is_generic = fn_info.is_generic,
-                .is_var_args = fn_info.is_var_args,
-                .params = &new_params,
-                .return_type = new_return_type,
-            } });
+            return @Fn(&param_types, &param_attrs, new_return_type, .{
+                .@"callconv" = fn_info.calling_convention,
+                .varargs = fn_info.is_var_args,
+            });
         }
 
         /// Get the struct type representing the vtable for a given implementation.
@@ -562,12 +557,20 @@ pub inline fn Template(comptime Tpl: type) type {
                 // Populate using implementation function pointers
                 populate_fields(0, tmpl_struct_fields, func_names, impl_info, &fields, false);
 
-                break :blk @Type(.{ .@"struct" = .{
-                    .layout = .auto,
-                    .fields = &fields,
-                    .decls = &.{},
-                    .is_tuple = false,
-                } });
+                var field_names: [count][:0]const u8 = undefined;
+                var field_types: [count]type = undefined;
+                var field_attrs: [count]std.builtin.Type.StructField.Attributes = undefined;
+                for (fields, 0..) |fld, i| {
+                    field_names[i] = fld.name;
+                    field_types[i] = fld.type;
+                    field_attrs[i] = .{
+                        .@"comptime" = fld.is_comptime,
+                        .@"align" = @as(usize, fld.alignment),
+                        .default_value_ptr = fld.default_value_ptr,
+                    };
+                }
+
+                break :blk @Struct(.auto, null, &field_names, &field_types, &field_attrs);
             };
         }
 
@@ -675,12 +678,29 @@ pub fn Templates(comptime TemplateTypes: []const type) type {
             all_fields = all_fields ++ &fields;
         }
 
-        break :blk @Type(.{ .@"struct" = .{
-            .layout = .auto,
-            .fields = all_fields,
-            .decls = &.{},
-            .is_tuple = false,
-        } });
+        var field_names: [all_fields.len][]const u8 = undefined;
+        for (all_fields, 0..) |fld, i| {
+            field_names[i] = fld.name;
+        }
+        var field_types: [all_fields.len]type = undefined;
+        for (all_fields, 0..) |fld, i| {
+            field_types[i] = fld.type;
+        }
+        var field_attrs: [all_fields.len]std.builtin.Type.StructField.Attributes = undefined;
+        for (all_fields, 0..) |fld, i| {
+            field_attrs[i] = .{
+                .@"comptime" = fld.is_comptime,
+                .@"align" = @as(usize, fld.alignment),
+                .default_value_ptr = fld.default_value_ptr,
+            };
+        }
+        break :blk @Struct(
+            .auto,
+            null,
+            &field_names,
+            &field_types,
+            &field_attrs,
+        );
     };
 
     return Template(CombinedTemplate);

@@ -1017,7 +1017,7 @@ fn buildReflectInfo(comptime T: type, comptime builtin: std.builtin.Type) Reflec
             }
             return ri;
         },
-        .@"fn" => |_| {
+        .@"fn" => {
             return ReflectInfo{ .func = FuncInfo.toFuncInfo(T) };
         },
         .@"struct", .@"enum", .@"union" => {
