@@ -71,6 +71,42 @@ pub fn getPublicTypes(comptime T: type) ?struct {
     return .{ .names = &names, .types = &types };
 }
 
+/// Returns `true` if `T` has a `deinit` method, or if any of its fields
+/// (struct / union / optional / array — but not through pointer indirection)
+/// transitively have one.
+///
+/// Use this at comptime to decide whether a type requires cleanup without
+/// necessarily exposing its own `deinit`.
+///
+/// Pointers are **not** recursed into because ownership is not implied.
+pub fn hasDeinit(comptime T: type) bool {
+    const ti = @typeInfo(T);
+    switch (ti) {
+        // Opaque types expose methods as decls
+        .@"opaque" => return @hasDecl(T, "deinit"),
+        .@"struct" => |s| {
+            if (@hasDecl(T, "deinit")) return true;
+            inline for (s.fields) |field| {
+                if (hasDeinit(field.type)) return true;
+            }
+            return false;
+        },
+        .@"union" => |u| {
+            if (@hasDecl(T, "deinit")) return true;
+            inline for (u.fields) |field| {
+                if (hasDeinit(field.type)) return true;
+            }
+            return false;
+        },
+        .optional => |o| return hasDeinit(o.child),
+        .array => |a| return hasDeinit(a.child),
+        // Pointers: don't recurse — pointer fields are borrows, not owned
+        .pointer => return false,
+        // Primitives and everything else: no cleanup needed
+        else => return false,
+    }
+}
+
 /// Create a dynamic error set with a single error whose name is given by the comptime string.
 pub fn DynamicError(comptime name: [:0]const u8) type {
     _ = name;
@@ -189,4 +225,43 @@ fn Gen(comptime T: type) type {
     return struct {
         value: T,
     };
+}
+
+test "hasDeinit - plain data type" {
+    const Plain = struct { x: i32, y: bool };
+    try std.testing.expect(!hasDeinit(Plain));
+    try std.testing.expect(!hasDeinit(bool));
+    try std.testing.expect(!hasDeinit(u64));
+}
+
+test "hasDeinit - type with deinit" {
+    const WithDeinit = struct {
+        buf: []u8,
+        pub fn deinit(self: *@This()) void {
+            _ = self;
+        }
+    };
+    try std.testing.expect(hasDeinit(WithDeinit));
+}
+
+test "hasDeinit - nested field with deinit" {
+    const Inner = struct {
+        data: []u8,
+        pub fn deinit(self: *@This()) void {
+            _ = self;
+        }
+    };
+    const Outer = struct { inner: Inner, count: u32 };
+    try std.testing.expect(hasDeinit(Outer));
+}
+
+test "hasDeinit - pointer field not recursed" {
+    const Pointee = struct {
+        pub fn deinit(self: *@This()) void {
+            _ = self;
+        }
+    };
+    const Borrower = struct { ptr: *Pointee };
+    // ptr is a borrow — Borrower itself doesn't need deinit
+    try std.testing.expect(!hasDeinit(Borrower));
 }

@@ -50,6 +50,7 @@ pub const hashWithSeed = reflect.hashWithSeed;
 pub const typeHash = reflect.typeHash;
 pub const getSimpleTypeName = reflect.getSimpleTypeName;
 pub const simplifyTypeName = reflect.simplifyTypeName;
+pub const hasDeinit = @import("utils.zig").hasDeinit;
 
 pub const utils = @import("utils.zig");
 
