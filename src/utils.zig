@@ -71,6 +71,63 @@ pub fn getPublicTypes(comptime T: type) ?struct {
     return .{ .names = &names, .types = &types };
 }
 
+/// Returns `true` if `T` structurally requires cleanup.
+/// This checks for types that need explicit cleanup by examining:
+/// - Types with a `deinit` method or opaque types
+/// - Slices and dynamic arrays (which represent allocated memory)
+/// - Optional types wrapping types that require cleanup
+/// - Struct/union fields that transitively require cleanup
+///
+/// This is purely structural and doesn't search for function names beyond `deinit`,
+/// making it efficient for reference-counted pointers (Arc/Rc) to determine if cleanup
+/// is needed without expensive reflection.
+///
+/// Pointers are **not** recursed into (other than slice detection) because
+/// ownership is not implied by single pointers.
+pub fn requiresCleanup(comptime T: type) bool {
+    const ti = @typeInfo(T);
+    switch (ti) {
+        // Opaque types might have cleanup
+        .@"opaque" => return @hasDecl(T, "deinit"),
+
+        // Slices and dynamic arrays always represent managed memory
+        .pointer => |p| {
+            if (p.size == .Slice or p.size == .Many) {
+                return true;
+            }
+            // Single pointers are borrows, not ownership
+            return false;
+        },
+
+        // Arrays might contain types needing cleanup
+        .array => |a| return requiresCleanup(a.child),
+
+        // Optionals wrap types that might need cleanup
+        .optional => |o| return requiresCleanup(o.child),
+
+        // Structs: check for deinit or fields needing cleanup
+        .@"struct" => |s| {
+            if (@hasDecl(T, "deinit")) return true;
+            inline for (s.fields) |field| {
+                if (requiresCleanup(field.type)) return true;
+            }
+            return false;
+        },
+
+        // Unions: check for deinit or fields needing cleanup
+        .@"union" => |u| {
+            if (@hasDecl(T, "deinit")) return true;
+            inline for (u.fields) |field| {
+                if (requiresCleanup(field.type)) return true;
+            }
+            return false;
+        },
+
+        // Primitives and everything else: no cleanup needed
+        else => return false,
+    }
+}
+
 /// Returns `true` if `T` has a `deinit` method, or if any of its fields
 /// (struct / union / optional / array — but not through pointer indirection)
 /// transitively have one.
@@ -264,4 +321,73 @@ test "hasDeinit - pointer field not recursed" {
     const Borrower = struct { ptr: *Pointee };
     // ptr is a borrow — Borrower itself doesn't need deinit
     try std.testing.expect(!hasDeinit(Borrower));
+}
+
+test "requiresCleanup - plain data types need no cleanup" {
+    try std.testing.expect(!requiresCleanup(bool));
+    try std.testing.expect(!requiresCleanup(u64));
+    try std.testing.expect(!requiresCleanup(f32));
+    const Plain = struct { x: i32, y: bool };
+    try std.testing.expect(!requiresCleanup(Plain));
+}
+
+test "requiresCleanup - slices always require cleanup" {
+    try std.testing.expect(requiresCleanup([]u8));
+    try std.testing.expect(requiresCleanup([]const u8));
+    try std.testing.expect(requiresCleanup([*]u8));
+    try std.testing.expect(requiresCleanup([]i32));
+}
+
+test "requiresCleanup - arrays with cleanup children" {
+    const WithDeinit = struct {
+        pub fn deinit(self: *@This()) void {
+            _ = self;
+        }
+    };
+    try std.testing.expect(requiresCleanup([10]WithDeinit));
+}
+
+test "requiresCleanup - optionals of slices" {
+    try std.testing.expect(requiresCleanup(?[]u8));
+    try std.testing.expect(requiresCleanup(?[]i32));
+}
+
+test "requiresCleanup - type with deinit" {
+    const WithDeinit = struct {
+        pub fn deinit(self: *@This()) void {
+            _ = self;
+        }
+    };
+    try std.testing.expect(requiresCleanup(WithDeinit));
+}
+
+test "requiresCleanup - struct with slice field" {
+    const WithSlice = struct { buf: []u8, count: u32 };
+    try std.testing.expect(requiresCleanup(WithSlice));
+}
+
+test "requiresCleanup - struct with deinit field" {
+    const Inner = struct {
+        pub fn deinit(self: *@This()) void {
+            _ = self;
+        }
+    };
+    const Outer = struct { inner: Inner, count: u32 };
+    try std.testing.expect(requiresCleanup(Outer));
+}
+
+test "requiresCleanup - single pointer is borrow (not cleanup)" {
+    try std.testing.expect(!requiresCleanup(*u32));
+    const Data = struct { x: i32 };
+    try std.testing.expect(!requiresCleanup(*Data));
+}
+
+test "requiresCleanup - optional of non-cleanup type" {
+    try std.testing.expect(!requiresCleanup(?u32));
+    try std.testing.expect(!requiresCleanup(?bool));
+}
+
+test "requiresCleanup - array of primitives" {
+    try std.testing.expect(!requiresCleanup([10]u8));
+    try std.testing.expect(!requiresCleanup([100]i32));
 }
