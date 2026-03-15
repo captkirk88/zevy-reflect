@@ -24,13 +24,11 @@ pub fn build(b: *std.Build) !void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
 
-    buildtools.fetch.addFetchStep(b, b.path("build.zig.zon")) catch |err| {
-        return err;
-    };
+    try buildtools.fetch.addFetchStep(b, b.path("build.zig.zon"));
 
     buildtools.fetch.addGetStep(b);
 
-    buildtools.deps.addDepsStep(b) catch |err| {
-        return err;
-    };
+    try buildtools.deps.addDepsStep(b);
+
+    try buildtools.fmt.addFmtStep(b, false);
 }
