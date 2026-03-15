@@ -92,7 +92,7 @@ pub fn requiresCleanup(comptime T: type) bool {
 
         // Slices and dynamic arrays always represent managed memory
         .pointer => |p| {
-            if (p.size == .Slice or p.size == .Many) {
+            if (p.size == .slice or p.size == .many) {
                 return true;
             }
             // Single pointers are borrows, not ownership

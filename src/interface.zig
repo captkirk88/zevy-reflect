@@ -471,7 +471,10 @@ pub inline fn Template(comptime Tpl: type) type {
                             .is_comptime = param.is_comptime,
                         };
                     }
-                    const new_return = substituteType(fi.return_type, template_type, impl_type);
+                    const new_return = if (fi.return_type) |ret_info|
+                        reflect.ReflectInfo.from(substituteTypeInType(ret_info.type, template_type, impl_type))
+                    else
+                        null;
                     const new_fi = reflect.FuncInfo{
                         .hash = fi.hash,
                         .name = @typeName(new_fn_type),
@@ -565,7 +568,7 @@ pub inline fn Template(comptime Tpl: type) type {
                     field_types[i] = fld.type;
                     field_attrs[i] = .{
                         .@"comptime" = fld.is_comptime,
-                        .@"align" = @as(usize, fld.alignment),
+                        .@"align" = fld.alignment orelse 0,
                         .default_value_ptr = fld.default_value_ptr,
                     };
                 }
@@ -690,7 +693,7 @@ pub fn Templates(comptime TemplateTypes: []const type) type {
         for (all_fields, 0..) |fld, i| {
             field_attrs[i] = .{
                 .@"comptime" = fld.is_comptime,
-                .@"align" = @as(usize, fld.alignment),
+                .@"align" = fld.alignment orelse 0,
                 .default_value_ptr = fld.default_value_ptr,
             };
         }
