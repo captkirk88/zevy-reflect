@@ -29,46 +29,53 @@ pub fn isGeneric(comptime T: anytype) bool {
 ///    ...
 /// }
 /// ```
-pub fn getPublicTypes(comptime T: type) ?struct {
+pub const PublicTypesResult = struct {
     names: []const []const u8,
-    types: []const type,
-} {
-    const info = reflect.getInfo(T);
-    if (info != .type) return null;
+    types: []const []const u8,
+};
 
-    const ti = info.type;
+/// Maximum number of public type declarations that getPublicTypes will report.
+const max_public_types = 64;
+
+const PublicTypesRaw = struct {
+    count: usize,
+    names: [max_public_types][]const u8,
+    types: [max_public_types][]const u8,
+};
+
+fn computePublicTypesRaw(comptime T: type) PublicTypesRaw {
+    const ti = reflect.TypeInfo.from(T);
     const decls = ti.getDeclNames();
 
-    comptime var count = 0;
-    inline for (decls) |decl| {
-        if (ti.getDecl(decl)) |d| {
-            switch (d.category) {
-                .Struct, .Enum, .Union, .Primitive => count += 1,
-                else => {},
-            }
-        }
-    }
+    var raw = PublicTypesRaw{ .count = 0, .names = undefined, .types = undefined };
 
-    if (decls.len == 0) return null;
-
-    var names: [count][]const u8 = undefined;
-    var types: [count]type = undefined;
-
-    comptime var i = 0;
     inline for (decls) |decl| {
         if (ti.getDecl(decl)) |d| {
             switch (d.category) {
                 .Struct, .Enum, .Union, .Primitive => {
-                    names[i] = decl;
-                    types[i] = d.type;
-                    i += 1;
+                    raw.names[raw.count] = decl;
+                    raw.types[raw.count] = @typeName(d.type);
+                    raw.count += 1;
+                    if (raw.count >= max_public_types) break;
                 },
                 else => {},
             }
         }
     }
+    return raw;
+}
 
-    return .{ .names = &names, .types = &types };
+pub fn getPublicTypes(comptime T: type) ?PublicTypesResult {
+    // const fields in a struct body are in static (rodata) memory —
+    // pointers into them are valid at runtime.
+    const Storage = struct {
+        const raw: PublicTypesRaw = computePublicTypesRaw(T);
+    };
+    if (Storage.raw.count == 0) return null;
+    return PublicTypesResult{
+        .names = Storage.raw.names[0..Storage.raw.count],
+        .types = Storage.raw.types[0..Storage.raw.count],
+    };
 }
 
 /// Returns `true` if `T` structurally requires cleanup.
@@ -214,14 +221,17 @@ test "getPublicTypes - struct with public types" {
         try std.testing.expectEqual(@as(usize, 1), r.names.len);
         try std.testing.expectEqual(@as(usize, 1), r.types.len);
         try std.testing.expectEqualStrings("TestStruct", r.names[0]);
-        try std.testing.expect(r.types[0] == namespace.TestStruct);
+        if (!std.mem.eql(u8, r.types[0], @typeName(namespace.TestStruct))) {
+            std.debug.print("getPublicTypes mismatch: expected {s}, got {s}\n", .{ @typeName(namespace.TestStruct), r.types[0] });
+        }
+        try std.testing.expect(std.mem.eql(u8, r.types[0], @typeName(namespace.TestStruct)));
         const inner_result = getPublicTypes(namespace.TestStruct);
         if (inner_result) |ir| {
             try std.testing.expectEqualStrings("A", ir.names[0]);
             try std.testing.expectEqualStrings("B", ir.names[1]);
             try std.testing.expectEqualStrings("Inner", ir.names[2]);
-            try std.testing.expect(ir.types[0] == u32);
-            try std.testing.expect(ir.types[1] == f32);
+            try std.testing.expect(std.mem.eql(u8, ir.types[0], @typeName(u32)));
+            try std.testing.expect(std.mem.eql(u8, ir.types[1], @typeName(f32)));
         }
     }
 }
@@ -239,9 +249,12 @@ test "getPublicTypes - union with public types" {
         try std.testing.expectEqual(@as(usize, 2), r.names.len);
         try std.testing.expectEqual(@as(usize, 2), r.types.len);
         try std.testing.expectEqualStrings("X", r.names[0]);
+        if (!std.mem.eql(u8, r.names[1], "Y")) {
+            std.debug.print("getPublicTypes union name mismatch: expected Y, got {s}\n", .{r.names[1]});
+        }
         try std.testing.expectEqualStrings("Y", r.names[1]);
-        try std.testing.expect(r.types[0] == bool);
-        try std.testing.expect(r.types[1] == u8);
+        try std.testing.expect(std.mem.eql(u8, r.types[0], @typeName(bool)));
+        try std.testing.expect(std.mem.eql(u8, r.types[1], @typeName(u8)));
     }
 }
 

@@ -264,148 +264,73 @@ pub inline fn Template(comptime Tpl: type) type {
                     };
                     const impl_func_info = impl_info.getFunc(method_name);
 
-                    var func_params: [tmpl_func_info.params.len]reflect.ParamInfo = undefined;
-                    for (0..tmpl_func_info.params.len) |j| {
-                        func_params[j] = tmpl_func_info.params[j];
-                        switch (func_params[j].info) {
-                            .type => |ti| {
-                                // If the param is exactly the template type, replace with Implementation
-                                if (ti.type == Tpl) {
-                                    func_params[j] = reflect.ParamInfo{
-                                        .info = .{ .type = reflect.TypeInfo.from(Implementation) },
-                                        .is_comptime = func_params[j].is_comptime,
-                                    };
-                                } else {
-                                    // If it's a pointer to the template (e.g. *Template or *const Template),
-                                    // construct a corresponding pointer-to-Implementation preserving constness.
-                                    if (@typeInfo(ti.type) == .pointer) {
-                                        const p = @typeInfo(ti.type).pointer;
-                                        const child = p.child;
-                                        if (child == Tpl) {
-                                            const new_ptr_type = if (p.is_const) *const Implementation else *Implementation;
-                                            func_params[j] = reflect.ParamInfo{
-                                                .info = .{ .type = reflect.TypeInfo.from(new_ptr_type) },
-                                                .is_comptime = func_params[j].is_comptime,
-                                            };
-                                        } else {
-                                            func_params[j] = reflect.ParamInfo{ .info = .{ .type = ti }, .is_comptime = func_params[j].is_comptime };
-                                        }
-                                    } else {
-                                        func_params[j] = reflect.ParamInfo{ .info = .{ .type = ti }, .is_comptime = func_params[j].is_comptime };
-                                    }
-                                }
-                            },
-                            .func => |fi| {
-                                // Substitute types within the function signature
-                                func_params[j] = reflect.ParamInfo{
-                                    .info = substituteType(.{ .func = fi }, Tpl, Implementation),
-                                    .is_comptime = func_params[j].is_comptime,
-                                };
-                            },
-                            .raw => |ty| {
-                                // If the param is exactly the template type, replace with Implementation
-                                if (ty == Tpl) {
-                                    func_params[j] = reflect.ParamInfo{
-                                        .info = .{ .type = reflect.TypeInfo.from(Implementation) },
-                                        .is_comptime = func_params[j].is_comptime,
-                                    };
-                                } else {
-                                    // If it's a pointer to the template (e.g. *Template or *const Template),
-                                    // construct a corresponding pointer-to-Implementation preserving constness.
-                                    if (@typeInfo(ty) == .pointer) {
-                                        const p = @typeInfo(ty).pointer;
-                                        const child = p.child;
-                                        if (child == Tpl) {
-                                            const new_ptr_type = if (p.is_const) *const Implementation else *Implementation;
-                                            func_params[j] = reflect.ParamInfo{
-                                                .info = .{ .type = reflect.TypeInfo.from(new_ptr_type) },
-                                                .is_comptime = func_params[j].is_comptime,
-                                            };
-                                        } else {
-                                            func_params[j] = reflect.ParamInfo{ .info = .{ .type = ty }, .is_comptime = func_params[j].is_comptime };
-                                        }
-                                    } else {
-                                        func_params[j] = reflect.ParamInfo{ .info = .{ .type = ty }, .is_comptime = func_params[j].is_comptime };
-                                    }
-                                }
-                            },
-                        }
+                    var func_params: [tmpl_func_info.paramsCount()]reflect.ParamInfo = undefined;
+                    for (0..tmpl_func_info.paramsCount()) |j| {
+                        const tmpl_param = tmpl_func_info.params()[j];
+                        const substituted_type = substituteTypeInType(tmpl_param.info.type, Tpl, Implementation);
+                        func_params[j] = reflect.ParamInfo{
+                            .info = reflect.ShallowTypeInfo.from(substituted_type),
+                            .is_noalias = tmpl_param.is_noalias,
+                            .is_comptime = tmpl_param.is_comptime,
+                        };
                     }
 
-                    const mixed_func_info = reflect.FuncInfo{
+                    var mixed_func_info: reflect.FuncInfo = .{
                         .name = tmpl_func_info.name,
-                        .params = func_params[0..tmpl_func_info.params.len],
+                        .params_storage = undefined,
+                        .params_count = 0,
                         .return_type = tmpl_func_info.return_type,
                         .container_type = impl_info.toShallow(),
                         .hash = tmpl_func_info.hash,
                         .type = tmpl_func_info.type,
                         .category = tmpl_func_info.category,
                     };
+                    for (0..tmpl_func_info.paramsCount()) |i| {
+                        mixed_func_info.params_storage[i] = func_params[i];
+                    }
+                    mixed_func_info.params_count = tmpl_func_info.paramsCount();
                     if (impl_func_info == null) {
                         missing_methods = missing_methods ++ &[_][]const u8{mixed_func_info.toStringEx(false, !verbose)};
                     } else {
                         // Check if parameters match (handling self parameters)
                         var param_match = true;
 
-                        if (tmpl_func_info.params.len != impl_func_info.?.params.len) {
+                        if (tmpl_func_info.paramsCount() != impl_func_info.?.paramsCount()) {
                             param_match = false;
                         } else {
-                            for (tmpl_func_info.params, 0..) |tmpl_param, i| {
-                                const impl_param = impl_func_info.?.params[i];
+                            for (tmpl_func_info.params(), 0..) |tmpl_param, i| {
+                                const impl_param = impl_func_info.?.params()[i];
                                 var expected_param = tmpl_param;
-
-                                // If the template parameter itself is a function type, rewrite any
-                                // embedded references to the template type so we compare against
-                                // the implementation's signature (e.g. fn(*Template) -> void).
-                                switch (tmpl_param.info) {
-                                    .func => {
-                                        expected_param = reflect.ParamInfo{
-                                            .info = substituteType(tmpl_param.info, Tpl, Implementation),
-                                            .is_noalias = tmpl_param.is_noalias,
-                                            .is_comptime = tmpl_param.is_comptime,
-                                        };
-                                    },
-                                    else => {},
-                                }
+                                expected_param.info = reflect.ShallowTypeInfo.from(substituteTypeInType(tmpl_param.info.type, Tpl, Implementation));
 
                                 // Check if template param references the template type (self parameter)
                                 var is_tmpl_self = false;
                                 var tmpl_is_const = false;
-                                switch (tmpl_param.info) {
-                                    .type => |ti| {
-                                        const tmpl_type = ti.type;
-                                        if (tmpl_type == Tpl) {
-                                            is_tmpl_self = true;
-                                        } else if (@typeInfo(tmpl_type) == .pointer) {
-                                            const ptr_info = @typeInfo(tmpl_type).pointer;
-                                            const child = ptr_info.child;
-                                            if (child == Tpl) {
-                                                is_tmpl_self = true;
-                                                tmpl_is_const = ptr_info.is_const;
-                                            }
-                                        }
-                                    },
-                                    else => {},
+                                const tmpl_type = tmpl_param.info.type;
+                                if (tmpl_type == Tpl) {
+                                    is_tmpl_self = true;
+                                } else if (@typeInfo(tmpl_type) == .pointer) {
+                                    const ptr_info = @typeInfo(tmpl_type).pointer;
+                                    const child = ptr_info.child;
+                                    if (child == Tpl) {
+                                        is_tmpl_self = true;
+                                        tmpl_is_const = ptr_info.is_const;
+                                    }
                                 }
 
                                 // Check if impl param references the impl type (self parameter)
                                 var is_impl_self = false;
                                 var impl_is_const = false;
-                                switch (impl_param.info) {
-                                    .type => |ti| {
-                                        const impl_type = ti.type;
-                                        if (impl_type == Implementation) {
-                                            is_impl_self = true;
-                                        } else if (@typeInfo(impl_type) == .pointer) {
-                                            const ptr_info = @typeInfo(impl_type).pointer;
-                                            const child = ptr_info.child;
-                                            if (child == Implementation) {
-                                                is_impl_self = true;
-                                                impl_is_const = ptr_info.is_const;
-                                            }
-                                        }
-                                    },
-                                    else => {},
+                                const impl_type = impl_param.info.type;
+                                if (impl_type == Implementation) {
+                                    is_impl_self = true;
+                                } else if (@typeInfo(impl_type) == .pointer) {
+                                    const ptr_info = @typeInfo(impl_type).pointer;
+                                    const child = ptr_info.child;
+                                    if (child == Implementation) {
+                                        is_impl_self = true;
+                                        impl_is_const = ptr_info.is_const;
+                                    }
                                 }
 
                                 // Both are self parameters - check const correctness
@@ -463,27 +388,33 @@ pub inline fn Template(comptime Tpl: type) type {
                 },
                 .func => |fi| {
                     const new_fn_type = substituteFunctionType(fi.type.type, template_type, impl_type);
-                    var new_params: [fi.params.len]reflect.ParamInfo = undefined;
-                    for (fi.params, 0..) |param, i| {
-                        new_params[i] = reflect.ParamInfo{
-                            .info = substituteType(param.info, template_type, impl_type),
-                            .is_noalias = param.is_noalias,
-                            .is_comptime = param.is_comptime,
-                        };
-                    }
-                    const new_return = if (fi.return_type) |ret_info|
-                        reflect.ReflectInfo.from(substituteTypeInType(ret_info.type, template_type, impl_type))
-                    else
-                        null;
-                    const new_fi = reflect.FuncInfo{
+                    var new_fi: reflect.FuncInfo = .{
                         .hash = fi.hash,
                         .name = @typeName(new_fn_type),
-                        .params = &new_params,
-                        .return_type = new_return,
+                        .params_storage = undefined,
+                        .params_count = 0,
+                        .return_type = reflect.ReturnTypeInfo{ .info = reflect.TypeInfo.from(void) },
                         .container_type = fi.container_type,
                         .type = reflect.ShallowTypeInfo.from(new_fn_type),
                         .category = fi.category,
                     };
+                    var param_count: usize = 0;
+                    for (fi.params()) |param| {
+                        const substituted_param_type = substituteTypeInType(param.info.type, template_type, impl_type);
+                        new_fi.params_storage[param_count] = reflect.ParamInfo{
+                            .info = reflect.ShallowTypeInfo.from(substituted_param_type),
+                            .is_noalias = param.is_noalias,
+                            .is_comptime = param.is_comptime,
+                        };
+                        param_count += 1;
+                    }
+                    const new_fn_type_info = @typeInfo(new_fn_type).@"fn";
+                    const new_return_type_info = if (new_fn_type_info.return_type) |rt|
+                        reflect.TypeInfo.from(rt)
+                    else
+                        reflect.TypeInfo.from(void);
+                    new_fi.return_type = reflect.ReturnTypeInfo{ .info = reflect.ShallowTypeInfo.from(new_return_type_info.type) };
+
                     return .{ .func = new_fi };
                 },
                 .raw => |ty| {
@@ -495,15 +426,26 @@ pub inline fn Template(comptime Tpl: type) type {
 
         fn substituteTypeInType(comptime T: type, comptime template_type: type, comptime impl_type: type) type {
             if (T == template_type) return impl_type;
-            if (@typeInfo(T) == .pointer) {
-                const p = @typeInfo(T).pointer;
-                const child = p.child;
-                if (child == template_type or std.mem.eql(u8, @typeName(child), @typeName(template_type))) {
-                    return if (p.is_const) *const impl_type else *impl_type;
-                }
+        const ti = @typeInfo(T);
+        if (ti == .pointer) {
+            const p = ti.pointer;
+            const child = p.child;
+            if (child == template_type or std.mem.eql(u8, @typeName(child), @typeName(template_type))) {
+                return if (p.is_const) *const impl_type else *impl_type;
             }
-            return T;
+            return @Pointer(p.size, .{
+                .@"const" = p.is_const,
+                .@"volatile" = p.is_volatile,
+                .@"allowzero" = p.is_allowzero,
+                .@"align" = p.alignment,
+                .@"addrspace" = p.address_space,
+            }, substituteTypeInType(child, template_type, impl_type), null);
         }
+        if (ti == .@"fn") {
+            return substituteFunctionType(T, template_type, impl_type);
+        }
+        return T;
+    }
 
         fn eraseSelfParam(comptime FnType: type) type {
             const fn_info = @typeInfo(FnType).@"fn";

@@ -2,6 +2,7 @@ const std = @import("std");
 const util = @import("utils.zig");
 
 pub inline fn typeHash(comptime T: type) u64 {
+    @setEvalBranchQuota(100_000);
     const name = @typeName(T);
     return std.hash.Wyhash.hash(0, name);
 }
@@ -147,7 +148,7 @@ pub const FieldInfo = struct {
 };
 
 pub const ParamInfo = struct {
-    info: ReflectInfo,
+    info: ShallowTypeInfo,
     /// Whether this parameter is marked `noalias`
     is_noalias: bool = false,
     is_comptime: bool = false,
@@ -157,11 +158,26 @@ pub const ParamInfo = struct {
     }
 };
 
+pub const ReturnTypeInfo = struct {
+    info: ShallowTypeInfo,
+
+    pub fn eql(self: *const ReturnTypeInfo, other: *const ReturnTypeInfo) bool {
+        return self.info.eql(&other.info);
+    }
+
+    pub fn toString(self: *const ReturnTypeInfo, simple: bool) []const u8 {
+        return if (simple) simplifyTypeName(self.info.name) else self.info.name;
+    }
+};
+
 pub const FuncInfo = struct {
+    const max_params = 16; // nobody should be programming a func with more than this or (your god) help me...
+
     hash: u64,
     name: []const u8,
-    params: []const ParamInfo,
-    return_type: ReflectInfo,
+    params_storage: [max_params]ParamInfo,
+    params_count: usize,
+    return_type: ReturnTypeInfo,
     container_type: ?ShallowTypeInfo = null,
     type: ShallowTypeInfo,
     category: Category,
@@ -223,43 +239,50 @@ pub const FuncInfo = struct {
                 const fn_type_info = @typeInfo(DeclType);
                 if (fn_type_info != .@"fn") {
                     @compileError(std.fmt.comptimePrint(
-                        "Declared member '{s}'' is not a function of type '{s}'",
+                        "Declared member '{s}' is not a function of type '{s}'",
                         .{ func_name, @typeName(type_info.type) },
                     ));
                 }
 
-                var param_infos: [fn_type_info.@"fn".params.len]ParamInfo = undefined;
-                var pi_i: usize = 0;
-                inline for (fn_type_info.@"fn".params) |param| {
-                    const p_t = param.type orelse void;
-                    param_infos[pi_i] = ParamInfo{ .info = ReflectInfo{ .raw = p_t }, .is_noalias = false, .is_comptime = false };
-                    pi_i += 1;
-                }
-
-                const return_ref: ReflectInfo = if (fn_type_info.@"fn".return_type) |r| ReflectInfo{ .raw = r } else ReflectInfo.unknown;
-
-                return FuncInfo{
+                var result: FuncInfo = .{
                     .hash = typeHash(DeclType),
                     .name = decl.name,
-                    .params = param_infos[0..pi_i],
+                    .params_storage = undefined,
+                    .params_count = 0,
+                    .return_type = ReturnTypeInfo{ .info = ShallowTypeInfo.from(void) },
                     .container_type = ShallowTypeInfo.from(type_info.type),
-                    .return_type = return_ref,
+                    .type = ShallowTypeInfo.from(DeclType),
+                    .category = FuncInfo.Category.from(DeclType),
                 };
+
+                var param_count: usize = 0;
+                inline for (fn_type_info.@"fn".params) |param| {
+                    const p_t = param.type orelse void;
+                    result.params_storage[param_count] = ParamInfo{ .info = ShallowTypeInfo.from(p_t), .is_noalias = false, .is_comptime = false };
+                    param_count += 1;
+                }
+                result.params_count = param_count;
+
+                const return_type_info = if (fn_type_info.@"fn".return_type) |r| ShallowTypeInfo.from(r) else ShallowTypeInfo.from(void);
+                result.return_type = ReturnTypeInfo{ .info = return_type_info };
+
+                return result;
             }
         }
         return null;
     }
 
     pub fn getParam(self: *const FuncInfo, index: usize) ?TypeInfo {
-        if (index >= self.params.len) return null;
-        return switch (self.params[index].info) {
-            .type => |ti| ti,
-            else => null,
-        };
+        if (index >= self.params_count) return null;
+        return self.params_storage[index].info.getFullInfo();
+    }
+
+    pub fn params(self: *const FuncInfo) []const ParamInfo {
+        return self.params_storage[0..self.params_count];
     }
 
     pub fn paramsCount(self: *const FuncInfo) usize {
-        return self.params.len;
+        return self.params_count;
     }
 
     /// Invoke the function with the given arguments.
@@ -289,47 +312,17 @@ pub const FuncInfo = struct {
         }
 
         // Ensure argument count matches (will assert at runtime)
-        std.debug.assert(arg_len == self.params.len);
+        std.debug.assert(arg_len == self.params_count);
 
         var typed_args: std.meta.ArgsTuple(FuncType) = undefined;
 
-        inline for (self.params, 0..) |param, i| {
-            const param_info = param.info;
-            typed_args[i] = blk: switch (param_info) {
-                .type => |ti| {
-                    if (ti.category == .Pointer) {
-                        if (args_is_tuple) {
-                            break :blk @as(ti.type, args[i]);
-                        } else {
-                            // Single arg case
-                            break :blk @as(ti.type, args);
-                        }
-                    } else {
-                        if (args_is_tuple) {
-                            break :blk @as(ti.type, args[i]);
-                        } else {
-                            // Single arg case
-                            break :blk @as(ti.type, args);
-                        }
-                    }
-                },
-                .func => |fi| {
-                    if (args_is_tuple) {
-                        break :blk @as(fi.type.type, args[i]);
-                    } else {
-                        // Single arg case
-                        break :blk @as(fi.type.type, args);
-                    }
-                },
-                .raw => |ty| {
-                    if (args_is_tuple) {
-                        break :blk @as(ty, args[i]);
-                    } else {
-                        // Single arg case
-                        break :blk @as(ty, args);
-                    }
-                },
-            };
+        inline for (self.params_storage[0..self.params_count], 0..) |param, i| {
+            const param_type = param.info.type;
+            if (args_is_tuple) {
+                typed_args[i] = @as(param_type, args[i]);
+            } else {
+                typed_args[i] = @as(param_type, args);
+            }
         }
 
         return @call(.auto, func, typed_args);
@@ -384,9 +377,9 @@ pub const FuncInfo = struct {
     /// *Must be called at comptime.*
     pub fn eql(self: *const FuncInfo, other: *const FuncInfo) bool {
         if (!std.mem.eql(u8, self.name, other.name)) return false;
-        if (self.params.len != other.params.len) return false;
-        inline for (self.params, 0..) |param, i| {
-            if (!param.eql(&other.params[i])) return false;
+        if (self.params_count != other.params_count) return false;
+        inline for (self.params_storage[0..self.params_count], 0..) |param, i| {
+            if (!param.eql(&other.params_storage[i])) return false;
         }
         if (!self.return_type.eql(&other.return_type)) return false;
         return true;
@@ -403,12 +396,12 @@ pub const FuncInfo = struct {
     fn formatFuncSignature(comptime fi: FuncInfo, comptime simple: bool) []const u8 {
         var params_str: []const u8 = "";
         var first_param = true;
-        inline for (fi.params) |p| {
-            const p_str = formatReflectInfo(p.info, simple);
+        inline for (fi.params_storage[0..fi.params_count]) |p| {
+            const p_str = if (simple) simplifyTypeName(p.info.name) else p.info.name;
             params_str = if (first_param) p_str else std.fmt.comptimePrint("{s}, {s}", .{ params_str, p_str });
             first_param = false;
         }
-        const ret_str = if (fi.return_type) |ret| formatReflectInfo(ret, simple) else "void";
+        const ret_str = fi.return_type.toString(simple);
         return std.fmt.comptimePrint("fn ({s}) -> {s}", .{ params_str, ret_str });
     }
 
@@ -424,29 +417,15 @@ pub const FuncInfo = struct {
         prefix_str = prefix_str ++ self.name;
 
         var first: bool = true;
-        inline for (self.params, 0..) |param, i| {
+        inline for (self.params_storage[0..self.params_count], 0..) |param, i| {
             // Skip first parameter if omit_self is true
             if (omit_self and i == 0) continue;
-            switch (param.info) {
-                .type => |ti| {
-                    if (first) {
-                        params_str = if (simple_names) simplifyTypeName(ti.name) else ti.name;
-                    } else {
-                        params_str = std.fmt.comptimePrint("{s}, {s}", .{ params_str, if (simple_names) simplifyTypeName(ti.name) else ti.name });
-                    }
-                },
-                .func => |fi| {
-                    const fn_sig = formatFuncSignature(fi, simple_names);
-                    params_str = if (first) fn_sig else std.fmt.comptimePrint("{s}, {s}", .{ params_str, fn_sig });
-                },
-                .raw => |ty| {
-                    const ty_name = if (simple_names) getSimpleTypeName(ty) else @typeName(ty);
-                    params_str = if (first) ty_name else std.fmt.comptimePrint("{s}, {s}", .{ params_str, ty_name });
-                },
-            }
+            const p_info = param.info;
+            const p_str = if (simple_names) simplifyTypeName(p_info.name) else p_info.name;
+            params_str = if (first) p_str else std.fmt.comptimePrint("{s}, {s}", .{ params_str, p_str });
             first = false;
         }
-        const return_str = formatReflectInfo(self.return_type, true);
+        const return_str = self.return_type.toString(simple_names);
 
         return std.fmt.comptimePrint("fn {s}({s}) -> {s}", .{ prefix_str, params_str, return_str });
     }
@@ -458,13 +437,17 @@ pub const FuncInfo = struct {
             const ri = buildReflectInfo(FuncType, builtin);
             return switch (ri) {
                 .func => |fi| fi,
-                .type => |ti| FuncInfo{
-                    .hash = ti.hash,
-                    .name = ti.name,
-                    .params = &[_]ParamInfo{},
-                    .return_type = ri,
-                    .type = ShallowTypeInfo.from(FuncType),
-                    .category = .Func,
+                .type => |ti| {
+                    return FuncInfo{
+                        .hash = ti.hash,
+                        .name = ti.name,
+                        .params_storage = undefined,
+                        .params_count = 0,
+                        .return_type = ReturnTypeInfo{ .info = ShallowTypeInfo.from(void) },
+                        .container_type = null,
+                        .type = ShallowTypeInfo.from(FuncType),
+                        .category = .Func,
+                    };
                 },
                 else => @compileError("Unexpected"),
             };
@@ -484,29 +467,32 @@ pub const FuncInfo = struct {
             },
         }
 
-        var param_infos: [zig_type_info.@"fn".params.len]ParamInfo = undefined;
-        var valid_params: usize = 0;
-        inline for (zig_type_info.@"fn".params, 0..) |param, i| {
-            _ = i;
-            // Handle null param.type
-            const ti = @typeInfo(@TypeOf(param.type));
-            const param_type = param.type orelse if (ti == .noreturn) noreturn else void;
-            const info = comptime toReflectInfo(param_type);
-            param_infos[valid_params] = ParamInfo{
-                .info = info,
-                .is_noalias = param.is_noalias,
-            };
-            valid_params += 1;
-        }
-        const return_type_info = if (zig_type_info.@"fn".return_type) |ret_type| comptime toReflectInfo(ret_type) else toReflectInfo(void);
-        const result = FuncInfo{
+        var result: FuncInfo = .{
             .type = ShallowTypeInfo.from(FuncType),
             .hash = type_hash,
             .name = @typeName(FuncType),
-            .params = param_infos[0..valid_params],
-            .return_type = return_type_info,
+            .params_storage = undefined,
+            .params_count = 0,
+            .return_type = ReturnTypeInfo{ .info = ShallowTypeInfo.from(void) },
+            .container_type = null,
             .category = FuncInfo.Category.from(FuncType),
         };
+
+        var param_count: usize = 0;
+        inline for (zig_type_info.@"fn".params) |param| {
+            const ti = @typeInfo(@TypeOf(param.type));
+            const param_type = param.type orelse if (ti == .noreturn) noreturn else void;
+            result.params_storage[param_count] = ParamInfo{ .info = ShallowTypeInfo.from(param_type), .is_noalias = param.is_noalias };
+            param_count += 1;
+        }
+        result.params_count = param_count;
+
+        const return_type_info = if (zig_type_info.@"fn".return_type) |ret_type|
+            ShallowTypeInfo.from(ret_type)
+        else
+            ShallowTypeInfo.from(void);
+        result.return_type = ReturnTypeInfo{ .info = return_type_info };
+
         markVisited(FuncType, @typeInfo(FuncType));
         return result;
     }
@@ -1167,33 +1153,30 @@ fn lazyGetFunc(type_info: *const TypeInfo, comptime func_name: []const u8) ?Func
     }
 
     // Build FuncInfo for this specific function
-    var param_infos: [func_type_info.@"fn".params.len]ParamInfo = undefined;
-    var valid_params: usize = 0;
-
-    inline for (func_type_info.@"fn".params) |param| {
-        const param_type = param.type.?;
-        const info = comptime toReflectInfo(param_type);
-        param_infos[valid_params] = ParamInfo{
-            .info = info,
-            .is_noalias = param.is_noalias,
-        };
-        valid_params += 1;
-    }
-
-    const return_type_info = if (func_type_info.@"fn".return_type) |ret_type|
-        comptime toReflectInfo(ret_type)
-    else
-        toReflectInfo(void);
-
-    const func_info = FuncInfo{
+    var func_info: FuncInfo = .{
         .hash = typeHash(FuncType),
         .name = func_name,
-        .params = param_infos[0..valid_params],
-        .return_type = return_type_info,
+        .params_storage = undefined,
+        .params_count = 0,
+        .return_type = ReturnTypeInfo{ .info = ShallowTypeInfo.from(void) },
         .container_type = ShallowTypeInfo.from(type_info.type),
         .type = ShallowTypeInfo.from(FuncType),
         .category = FuncInfo.Category.from(FuncType),
     };
+
+    var param_count: usize = 0;
+    inline for (func_type_info.@"fn".params) |param| {
+        const param_type = param.type.?;
+        func_info.params_storage[param_count] = ParamInfo{ .info = ShallowTypeInfo.from(param_type), .is_noalias = param.is_noalias };
+        param_count += 1;
+    }
+    func_info.params_count = param_count;
+
+    const return_type_info = if (func_type_info.@"fn".return_type) |ret_type|
+        ShallowTypeInfo.from(ret_type)
+    else
+        ShallowTypeInfo.from(void);
+    func_info.return_type = ReturnTypeInfo{ .info = return_type_info };
 
     return func_info;
 }
@@ -1455,7 +1438,7 @@ pub inline fn getSimpleTypeName(comptime T: type) []const u8 {
     }
 }
 
-fn extractPointerPrefix(comptime type_name: []const u8) []const u8 {
+fn extractPointerPrefix(type_name: []const u8) []const u8 {
     if (type_name.len == 0 or type_name[0] != '*') return type_name[0..0];
     var i: usize = 1;
     while (i < type_name.len and type_name[i] == ' ') : (i += 1) {}
@@ -1466,126 +1449,31 @@ fn extractPointerPrefix(comptime type_name: []const u8) []const u8 {
     return type_name[0..i];
 }
 
-fn simplifySimpleTypeName(comptime type_name: []const u8) []const u8 {
-    var last_dot: ?usize = null;
-    inline for (type_name, 0..) |c, i| {
-        if (c == '.') last_dot = i;
-    }
-    if (last_dot == null) return type_name;
-    return type_name[last_dot.? + 1 ..];
+/// Simplify a simple (non-fn, non-pointer) type name by removing module prefix.
+/// Returns a slice of the input — no allocation needed.
+fn simplifySimpleTypeName(type_name: []const u8) []const u8 {
+    const last_dot = std.mem.lastIndexOf(u8, type_name, ".") orelse return type_name;
+    return type_name[last_dot + 1 ..];
 }
 
-fn simplifyFunctionTypeName(comptime type_name: []const u8) []const u8 {
-    // Assume starts with "fn "
-    var i: usize = 3;
-    while (i < type_name.len and type_name[i] != '(') : (i += 1) {}
-    if (i >= type_name.len) return type_name;
-    const params_start = i + 1;
-    i += 1;
-    var paren_count: i32 = 1;
-    var params_end = i;
-    while (i < type_name.len and paren_count > 0) {
-        if (type_name[i] == '(') paren_count += 1 else if (type_name[i] == ')') paren_count -= 1;
-        if (paren_count > 0) params_end = i + 1;
-        i += 1;
-    }
-    if (paren_count != 0) return type_name;
-    const return_type_str = type_name[i..];
-    // Parse params
-    var param_buf: [16][]const u8 = undefined;
-    var param_count: usize = 0;
-    var start = params_start;
-    var j = start;
-    while (j < params_end and param_count < 16) {
-        if (type_name[j] == ',') {
-            const param = std.mem.trim(u8, type_name[start..j], &std.ascii.whitespace);
-            if (param.len > 0) {
-                param_buf[param_count] = param;
-                param_count += 1;
-            }
-            start = j + 1;
-        }
-        j += 1;
-    }
-    if (start < params_end and param_count < 16) {
-        const param = std.mem.trim(u8, type_name[start..params_end], &std.ascii.whitespace);
-        if (param.len > 0) {
-            param_buf[param_count] = param;
-            param_count += 1;
-        }
-    }
-    // Simplify params
-    var simplified_buf: [16][]const u8 = undefined;
-    inline for (0..16) |idx| {
-        if (idx < param_count) {
-            const p = param_buf[idx];
-            const prefix = extractPointerPrefix(p);
-            const base = p[prefix.len..];
-            const simplified = simplifySimpleTypeName(base);
-            if (prefix.len == 0) {
-                simplified_buf[idx] = simplified;
-            } else {
-                const len = prefix.len + simplified.len;
-                var buf: [len]u8 = undefined;
-                @memcpy(buf[0..prefix.len], prefix);
-                @memcpy(buf[prefix.len..len], simplified);
-                simplified_buf[idx] = buf[0..len];
-            }
-        }
-    }
-    const simplified_return = blk: {
-        const prefix = extractPointerPrefix(return_type_str);
-        const base = return_type_str[prefix.len..];
-        const simplified = simplifySimpleTypeName(base);
-        if (prefix.len == 0) break :blk simplified;
-        const len = prefix.len + simplified.len;
-        var buf: [len]u8 = undefined;
-        @memcpy(buf[0..prefix.len], prefix);
-        @memcpy(buf[prefix.len..len], simplified);
-        break :blk buf[0..len];
-    };
-    // Calculate total length
-    var total_len: usize = 4; // "fn ("
-    inline for (0..16) |idx| {
-        if (idx < param_count) {
-            if (idx > 0) total_len += 2; // ", "
-            total_len += simplified_buf[idx].len;
-        }
-    }
-    total_len += 2; // ") "
-    total_len += simplified_return.len;
-    // Build output
-    var out: [total_len]u8 = undefined;
-    var pos: usize = 0;
-    @memcpy(out[pos .. pos + 4], "fn (");
-    pos += 4;
-    inline for (0..16) |idx| {
-        if (idx < param_count) {
-            if (idx > 0) {
-                @memcpy(out[pos .. pos + 2], ", ");
-                pos += 2;
-            }
-            @memcpy(out[pos .. pos + simplified_buf[idx].len], simplified_buf[idx]);
-            pos += simplified_buf[idx].len;
-        }
-    }
-    @memcpy(out[pos .. pos + 2], ") ");
-    pos += 2;
-    @memcpy(out[pos .. pos + simplified_return.len], simplified_return);
-    pos += simplified_return.len;
-    return out[0..pos];
+/// Simplify a function type name string.  Returns the input unchanged because
+/// reconstructing simplified params + return without an allocator is not feasible.
+fn simplifyFunctionTypeName(type_name: []const u8) []const u8 {
+    return type_name;
 }
 
-pub fn simplifyTypeName(comptime type_name: []const u8) []const u8 {
+/// Return a simplified (last-component) version of a fully-qualified type name.
+/// Works both at comptime and at runtime.  For pointer-prefixed types the full
+/// name is returned unchanged (concatenating prefix + simplified base would
+/// require an allocator).
+pub fn simplifyTypeName(type_name: []const u8) []const u8 {
     const prefix = extractPointerPrefix(type_name);
     const base = type_name[prefix.len..];
-    const simplified_base = if (std.mem.startsWith(u8, base, "fn ")) simplifyFunctionTypeName(base) else simplifySimpleTypeName(base);
-    if (prefix.len == 0) return simplified_base;
-    const out_len = prefix.len + simplified_base.len;
-    var out: [out_len]u8 = undefined;
-    @memcpy(out[0..prefix.len], prefix);
-    @memcpy(out[prefix.len..out_len], simplified_base);
-    return out[0..out_len];
+    // Can only return a slice; if there's a pointer prefix we would need to
+    // allocate to prepend it, so fall back to the original string.
+    if (prefix.len > 0) return type_name;
+    if (std.mem.startsWith(u8, base, "fn ")) return simplifyFunctionTypeName(base);
+    return simplifySimpleTypeName(base);
 }
 
 // ===== TESTS =====
@@ -1806,17 +1694,12 @@ test "reflect - function type" {
     const info = getInfo(FT);
     switch (info) {
         .func => |fi| {
-            try std.testing.expectEqual(@as(usize, 1), fi.params.len);
-            // param is a ReflectInfo; expect its type to be i32
+            try std.testing.expectEqual(@as(usize, 1), fi.params_count);
             var saw = false;
-            inline for (fi.params) |p| {
-                switch (p.info) {
-                    .type => |pti| {
-                        try std.testing.expectEqualStrings(@typeName(i32), pti.name);
-                        saw = true;
-                    },
-                    else => {},
-                }
+            inline for (fi.params_storage[0..fi.params_count]) |p| {
+                const pti = p.info;
+                try std.testing.expectEqualStrings(@typeName(i32), pti.name);
+                saw = true;
             }
             try std.testing.expect(saw);
         },
@@ -1847,11 +1730,8 @@ test "reflect - function with anyopaque param" {
     const FnType = fn (*anyopaque) void;
     const fi = comptime FuncInfo.from(FnType) orelse unreachable;
 
-    try std.testing.expectEqual(@as(usize, 1), fi.params.len);
-    switch (fi.params[0].info) {
-        .type => |ti| try std.testing.expectEqualStrings(@typeName(*anyopaque), ti.name),
-        else => try std.testing.expect(false),
-    }
+    try std.testing.expectEqual(@as(usize, 1), fi.params_count);
+    try std.testing.expectEqualStrings(@typeName(*anyopaque), fi.params()[0].info.name);
 }
 
 test "reflect - TypeInfo with lazy decl/func access" {
@@ -1897,7 +1777,7 @@ test "reflect - TypeInfo with lazy decl/func access" {
         @compileError("Failed to get 'add' function");
     };
     try std.testing.expectEqualStrings("add", add_func.name);
-    try std.testing.expectEqual(@as(usize, 1), add_func.params.len);
+    try std.testing.expectEqual(@as(usize, 1), add_func.params_count);
     std.debug.print("\tFunc 'add': {s}\n", .{add_func.toString()});
 
     // Test lazy decl access
@@ -2059,52 +1939,20 @@ test "reflect - fromMethod slice parameter type" {
 
     std.debug.print("\nfromMethod result:\n", .{});
     std.debug.print("Function: {s}\n", .{func_info.name});
-    std.debug.print("Params: {d}\n", .{func_info.params.len});
+    std.debug.print("Params: {d}\n", .{func_info.params_count});
 
-    inline for (func_info.params, 0..) |param, i| {
-        switch (param.info) {
-            .type => |ti| {
-                std.debug.print("  Param {d}: {s}\n", .{ i, @typeName(ti.type) });
-            },
-            else => {
-                std.debug.print("  Param {d}: not a type\n", .{i});
-            },
-        }
+    inline for (func_info.params_storage[0..func_info.params_count], 0..) |param, i| {
+        const ti = param.info;
+        std.debug.print("  Param {d}: {s}\n", .{ i, @typeName(ti.type) });
     }
 
-    std.debug.print("   Return: {s}\n", .{switch (func_info.return_type) {
-        .type => |ti| ti.name,
-        else => "not a type",
-    }});
+    std.debug.print("   Return: {s}\n", .{func_info.return_type.toString(true)});
 
     // Check that param 1 is []const u8, not u8
-    switch (func_info.params[1].info) {
-        .type => |ti| {
-            try std.testing.expectEqual([]const u8, ti.type);
-        },
-        else => {
-            try std.testing.expect(false); // Should be a type
-        },
-    }
+    try std.testing.expectEqualStrings(@typeName([]const u8), func_info.params_storage[1].info.name);
 
-    switch (func_info.params[2].info) {
-        .type => |ti| {
-            try std.testing.expectEqual(void, ti.type);
-        },
-        else => {
-            try std.testing.expect(false); // Should be a type
-        },
-    }
-
-    switch (func_info.params[3].info) {
-        .type => |ti| {
-            try std.testing.expectEqual(ti.is_optional, true);
-            try std.testing.expectEqual(?void, ti.type);
-        },
-        else => {
-            try std.testing.expect(false); // Should be a type
-        },
-    }
+    try std.testing.expectEqualStrings(@typeName(void), func_info.params_storage[2].info.name);
+    try std.testing.expectEqualStrings(@typeName(?void), func_info.params_storage[3].info.name);
 }
 
 test "reflect - getFunc finds method" {
@@ -2120,7 +1968,7 @@ test "reflect - getFunc finds method" {
     std.debug.print("\ngetFunc result for 'draw': {}\n", .{func_info != null});
     if (func_info) |fi| {
         std.debug.print("  Function name: {s}\n", .{fi.name});
-        std.debug.print("  Params: {d}\n", .{fi.params.len});
+        std.debug.print("  Params: {d}\n", .{fi.params_count});
     }
 
     try std.testing.expect(func_info != null);
