@@ -130,13 +130,15 @@ pub const FieldInfo = struct {
     }
 
     /// Get the value of this field from the given instance.
-    pub fn get(self: *const FieldInfo, inst: *self.container_type.type) self.type.type {
-        return @as(self.type.type, @field(inst, self.name));
+    /// `self` must be comptime-known (e.g. from `inline for` over `TypeInfo.fields`).
+    pub fn get(comptime self: FieldInfo, inst: *self.container_type.type) self.type.type {
+        return @as(self.type.type, @field(inst.*, self.name));
     }
 
     /// Set the value of this field on the given instance.
-    pub fn set(self: *const FieldInfo, inst: *self.container_type.type, value: self.type.type) void {
-        @field(inst, self.name) = value;
+    /// `self` must be comptime-known (e.g. from `inline for` over `TypeInfo.fields`).
+    pub fn set(comptime self: FieldInfo, inst: *self.container_type.type, value: self.type.type) void {
+        @field(inst.*, self.name) = value;
     }
 
     /// Check if this FieldInfo is equal to another
@@ -2212,7 +2214,9 @@ test "isComptimeOnlyType - fn types are always comptime-only" {
 
     // Generic fn type (anytype param)
     const GenericFn = @TypeOf(struct {
-        fn f(x: anytype) void { _ = x; }
+        fn f(x: anytype) void {
+            _ = x;
+        }
     }.f);
     try std.testing.expect(isComptimeOnlyType(GenericFn));
 
