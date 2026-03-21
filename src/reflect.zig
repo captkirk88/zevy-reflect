@@ -498,7 +498,28 @@ pub const FuncInfo = struct {
     }
 };
 
+fn isComptimeOnlyType(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .comptime_int, .comptime_float, .type, .enum_literal, .undefined, .null, .noreturn => true,
+        // All bare function types (generic or not) are comptime-only in Zig.
+        // Runtime use requires a function pointer (*const fn(...)).
+        // Type.Fn.is_generic flags anytype/comptime params, but a bare fn type has no
+        // runtime size regardless of whether is_generic is true or false.
+        .@"fn" => true,
+        // An optional wrapping a comptime-only child is itself comptime-only.
+        .optional => |opt| isComptimeOnlyType(opt.child),
+        // NOTE: structs whose fields all have `is_comptime = true` (StructField.is_comptime)
+        // are zero-sized but still runtime-valid — @sizeOf returns 0 and @sizeOf(?T) returns 1.
+        // They are NOT comptime-only and are handled by the else branch below.
+        else => false,
+    };
+}
+
 fn safeSizeOf(comptime T: type) usize {
+    // Comptime-only types have no runtime representation; return 0 immediately.
+    // This early return must come first so that @sizeOf(T) below is never semantically
+    // analyzed for comptime-only types — even from a runtime test context.
+    if (comptime isComptimeOnlyType(T)) return 0;
     return switch (@typeInfo(T)) {
         .@"opaque" => {
             if (T == anyopaque) return 0;
@@ -510,14 +531,6 @@ fn safeSizeOf(comptime T: type) usize {
                 @compileError(std.fmt.comptimePrint("couldn't find opaque's type from any declarations called Type or Child for {s}", .{@typeName(T)}));
             }
         },
-        .comptime_int => 0,
-        .comptime_float => 0,
-        .type => 0,
-        .enum_literal => 0,
-        .undefined => 0,
-        .null => 0,
-        .noreturn => 0,
-        .@"fn" => 0,
         else => @sizeOf(T),
     };
 }
@@ -2177,4 +2190,116 @@ test "reflect - lazyGetFunc pointer delegation" {
     // Pointer to primitive should not have methods
     const prim_ptr_type_info = comptime TypeInfo.from(*u32);
     try std.testing.expect(!prim_ptr_type_info.hasFunc("someMethod"));
+}
+
+test "isComptimeOnlyType - primitive comptime types" {
+    // Confirmed comptime-only types
+    try std.testing.expect(isComptimeOnlyType(type));
+    try std.testing.expect(isComptimeOnlyType(@TypeOf(42))); // comptime_int
+    try std.testing.expect(isComptimeOnlyType(@TypeOf(1.0))); // comptime_float
+    try std.testing.expect(isComptimeOnlyType(@TypeOf(.foo))); // enum_literal
+    try std.testing.expect(isComptimeOnlyType(@TypeOf(undefined)));
+    try std.testing.expect(isComptimeOnlyType(@TypeOf(null)));
+    try std.testing.expect(isComptimeOnlyType(noreturn));
+}
+
+test "isComptimeOnlyType - fn types are always comptime-only" {
+    const NonGenericFn = fn (u32) void;
+    const NonGenericFnRet = fn () u32;
+    // Non-generic bare function types have no runtime size in Zig
+    try std.testing.expect(isComptimeOnlyType(NonGenericFn));
+    try std.testing.expect(isComptimeOnlyType(NonGenericFnRet));
+
+    // Generic fn type (anytype param)
+    const GenericFn = @TypeOf(struct {
+        fn f(x: anytype) void { _ = x; }
+    }.f);
+    try std.testing.expect(isComptimeOnlyType(GenericFn));
+
+    // Function POINTER is NOT comptime-only
+    try std.testing.expect(!isComptimeOnlyType(*const fn (u32) void));
+    try std.testing.expect(!isComptimeOnlyType(*const NonGenericFn));
+}
+
+test "isComptimeOnlyType - optional types" {
+    // Optional wrapping a comptime-only child → comptime-only
+    try std.testing.expect(isComptimeOnlyType(?type));
+    try std.testing.expect(isComptimeOnlyType(?(fn (u32) void)));
+
+    // Optional wrapping a runtime type → NOT comptime-only
+    try std.testing.expect(!isComptimeOnlyType(?u32));
+    try std.testing.expect(!isComptimeOnlyType(?bool));
+    try std.testing.expect(!isComptimeOnlyType(?*anyopaque));
+}
+
+test "isComptimeOnlyType - runtime types" {
+    try std.testing.expect(!isComptimeOnlyType(u32));
+    try std.testing.expect(!isComptimeOnlyType(i64));
+    try std.testing.expect(!isComptimeOnlyType(bool));
+    try std.testing.expect(!isComptimeOnlyType(f32));
+    try std.testing.expect(!isComptimeOnlyType([]const u8));
+    try std.testing.expect(!isComptimeOnlyType(*anyopaque));
+}
+
+test "isComptimeOnlyType - struct with all comptime fields" {
+    // Structs with all `comptime` fields (StructField.is_comptime = true) are
+    // zero-sized at runtime but are still valid runtime types — @sizeOf returns 0
+    // and @sizeOf(?T) returns 1. They are NOT comptime-only.
+    const AllComptimeFields = struct {
+        comptime tag: type = u32,
+        comptime name: []const u8 = "test",
+    };
+    try std.testing.expect(!isComptimeOnlyType(AllComptimeFields));
+
+    // A struct with at least one runtime field is NOT comptime-only
+    const MixedFields = struct {
+        comptime tag: type = u32,
+        value: u32,
+    };
+    try std.testing.expect(!isComptimeOnlyType(MixedFields));
+
+    // Normal runtime struct
+    const RuntimeStruct = struct { x: u32, y: f32 };
+    try std.testing.expect(!isComptimeOnlyType(RuntimeStruct));
+
+    // Empty struct is zero-size but runtime-valid (not comptime-only)
+    const EmptyStruct = struct {};
+    try std.testing.expect(!isComptimeOnlyType(EmptyStruct));
+}
+
+test "safeSizeOf - runtime types" {
+    try std.testing.expectEqual(@as(usize, @sizeOf(u32)), safeSizeOf(u32));
+    try std.testing.expectEqual(@as(usize, @sizeOf(u64)), safeSizeOf(u64));
+    try std.testing.expectEqual(@as(usize, @sizeOf(bool)), safeSizeOf(bool));
+    try std.testing.expectEqual(@as(usize, @sizeOf(f32)), safeSizeOf(f32));
+    try std.testing.expectEqual(@as(usize, @sizeOf(*anyopaque)), safeSizeOf(*anyopaque));
+}
+
+test "safeSizeOf - comptime-only types return 0" {
+    try std.testing.expectEqual(@as(usize, 0), safeSizeOf(type));
+    try std.testing.expectEqual(@as(usize, 0), safeSizeOf(noreturn));
+    try std.testing.expectEqual(@as(usize, 0), safeSizeOf(fn (u32) void));
+    try std.testing.expectEqual(@as(usize, 0), safeSizeOf(fn () u32));
+}
+
+test "safeSizeOf - optional types" {
+    // Optional of a comptime-only child → 0 (no runtime representation)
+    try std.testing.expectEqual(@as(usize, 0), safeSizeOf(?type));
+    try std.testing.expectEqual(@as(usize, 0), safeSizeOf(?(fn (u32) void)));
+
+    // Optional of a runtime type → normal optional size
+    try std.testing.expectEqual(@as(usize, @sizeOf(?u32)), safeSizeOf(?u32));
+    try std.testing.expectEqual(@as(usize, @sizeOf(?bool)), safeSizeOf(?bool));
+}
+
+test "safeSizeOf - zero-size struct with all comptime fields" {
+    // Structs with only `comptime` fields have @sizeOf == 0 but are runtime-valid.
+    // safeSizeOf delegates to @sizeOf which correctly returns 0.
+    const AllComptimeFields = struct {
+        comptime tag: type = u32,
+        comptime name: []const u8 = "test",
+    };
+    try std.testing.expectEqual(@as(usize, 0), safeSizeOf(AllComptimeFields));
+    // Their optional wrapper has size 1 (the null discriminant byte).
+    try std.testing.expectEqual(@as(usize, @sizeOf(?AllComptimeFields)), safeSizeOf(?AllComptimeFields));
 }
