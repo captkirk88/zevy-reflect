@@ -290,6 +290,15 @@ pub inline fn Template(comptime Tpl: type) type {
             return std.fmt.comptimePrint("fn {s}({s}) -> {s}", .{ impl_func_info.name, params_str, return_name });
         }
 
+        fn displayedParamCount(comptime func_info: reflect.FuncInfo, comptime SelfType: type) usize {
+            const hides_self = func_info.paramsCount() > 0 and isSelfParamType(func_info.params()[0].info.type, SelfType);
+            return func_info.paramsCount() - @intFromBool(hides_self);
+        }
+
+        fn typeNameForMismatch(comptime T: type, comptime simple_names: bool) []const u8 {
+            return if (simple_names) reflect.simplifyTypeName(@typeName(T)) else @typeName(T);
+        }
+
         fn hasCompatibleReturnType(comptime tmpl_func_info: reflect.FuncInfo, comptime impl_func_info: reflect.FuncInfo, comptime Implementation: type) bool {
             const expected_return = substituteTypeInType(tmpl_func_info.return_type.info.type, Tpl, Implementation);
             return expected_return == impl_func_info.return_type.info.type;
@@ -309,19 +318,99 @@ pub inline fn Template(comptime Tpl: type) type {
             return true;
         }
 
+        fn firstMismatchReason(comptime tmpl_func_info: reflect.FuncInfo, comptime impl_func_info: reflect.FuncInfo, comptime Implementation: type, comptime simple_names: bool) []const u8 {
+            if (tmpl_func_info.paramsCount() != impl_func_info.paramsCount()) {
+                if (isStaticMethodMissingSelf(tmpl_func_info, impl_func_info, Implementation)) {
+                    return "missing self parameter: interface requires self as the first parameter";
+                }
+
+                return std.fmt.comptimePrint("parameter count mismatch: expected {d}, found {d}", .{
+                    displayedParamCount(tmpl_func_info, Tpl),
+                    displayedParamCount(impl_func_info, Implementation),
+                });
+            }
+
+            var visible_param_index: usize = 0;
+            inline for (0..tmpl_func_info.paramsCount()) |i| {
+                const tmpl_param = tmpl_func_info.params()[i];
+                const impl_param = impl_func_info.params()[i];
+                const expected_type = substituteTypeInType(tmpl_param.info.type, Tpl, Implementation);
+                const actual_type = impl_param.info.type;
+                const tmpl_is_self = isSelfParamType(tmpl_param.info.type, Tpl);
+                const impl_is_self = isSelfParamType(actual_type, Implementation);
+
+                if (tmpl_is_self and impl_is_self) {
+                    if (expected_type != actual_type) {
+                        if (@typeInfo(expected_type) == .pointer and @typeInfo(actual_type) == .pointer) {
+                            const expected_ptr = @typeInfo(expected_type).pointer;
+                            const actual_ptr = @typeInfo(actual_type).pointer;
+                            if (expected_ptr.child == actual_ptr.child and expected_ptr.is_const != actual_ptr.is_const) {
+                                return if (!expected_ptr.is_const and actual_ptr.is_const)
+                                    "self parameter mutability mismatch: expected mutable self, found const self"
+                                else
+                                    "self parameter mutability mismatch: expected const self, found mutable self";
+                            }
+                        }
+
+                        return std.fmt.comptimePrint("self parameter type mismatch: expected {s}, found {s}", .{
+                            typeNameForMismatch(expected_type, simple_names),
+                            typeNameForMismatch(actual_type, simple_names),
+                        });
+                    }
+                    continue;
+                }
+
+                if (tmpl_is_self != impl_is_self) {
+                    return if (tmpl_is_self)
+                        "self parameter position mismatch"
+                    else
+                        std.fmt.comptimePrint("parameter {d} unexpectedly became self", .{visible_param_index + 1});
+                }
+
+                if (expected_type != actual_type) {
+                    return std.fmt.comptimePrint("parameter {d} type mismatch: expected {s}, found {s}", .{
+                        visible_param_index + 1,
+                        typeNameForMismatch(expected_type, simple_names),
+                        typeNameForMismatch(actual_type, simple_names),
+                    });
+                }
+
+                if (tmpl_param.is_noalias != impl_param.is_noalias) {
+                    return std.fmt.comptimePrint("parameter {d} noalias mismatch", .{visible_param_index + 1});
+                }
+
+                if (tmpl_param.is_comptime != impl_param.is_comptime) {
+                    return std.fmt.comptimePrint("parameter {d} comptime mismatch", .{visible_param_index + 1});
+                }
+
+                visible_param_index += 1;
+            }
+
+            const expected_return = substituteTypeInType(tmpl_func_info.return_type.info.type, Tpl, Implementation);
+            const actual_return = impl_func_info.return_type.info.type;
+            if (expected_return != actual_return) {
+                return std.fmt.comptimePrint("return type mismatch: expected {s}, found {s}", .{
+                    typeNameForMismatch(expected_return, simple_names),
+                    typeNameForMismatch(actual_return, simple_names),
+                });
+            }
+
+            return "signature mismatch";
+        }
+
         fn incompatibleMethodMessage(comptime tmpl_func_info: reflect.FuncInfo, comptime impl_func_info: reflect.FuncInfo, comptime Implementation: type, comptime simple_names: bool) []const u8 {
             const expected_signature = expectedMethodSignatureEx(tmpl_func_info, Implementation, simple_names, true);
             const actual_signature = implementationMethodSignature(impl_func_info, Implementation, simple_names, true);
+            const reason = firstMismatchReason(tmpl_func_info, impl_func_info, Implementation, simple_names);
 
-            var reason: []const u8 = "signature mismatch";
-            if (isStaticMethodMissingSelf(tmpl_func_info, impl_func_info, Implementation)) {
-                reason = "missing self parameter";
-            } else if (!hasCompatibleReturnType(tmpl_func_info, impl_func_info, Implementation)) {
-                reason = "return type mismatch";
+            if (std.mem.eql(u8, expected_signature, actual_signature)) {
+                return std.fmt.comptimePrint("{s}\n    mismatch: {s}", .{
+                    expected_signature,
+                    reason,
+                });
             }
 
-            return std.fmt.comptimePrint("{s}: expected {s}, found {s} ({s})", .{
-                expectedMethodSignature(tmpl_func_info, Implementation, simple_names),
+            return std.fmt.comptimePrint("{s}\n    found: {s}\n    mismatch: {s}", .{
                 expected_signature,
                 actual_signature,
                 reason,
@@ -519,26 +608,26 @@ pub inline fn Template(comptime Tpl: type) type {
 
         fn substituteTypeInType(comptime T: type, comptime template_type: type, comptime impl_type: type) type {
             if (T == template_type) return impl_type;
-        const ti = @typeInfo(T);
-        if (ti == .pointer) {
-            const p = ti.pointer;
-            const child = p.child;
-            if (child == template_type or std.mem.eql(u8, @typeName(child), @typeName(template_type))) {
-                return if (p.is_const) *const impl_type else *impl_type;
+            const ti = @typeInfo(T);
+            if (ti == .pointer) {
+                const p = ti.pointer;
+                const child = p.child;
+                if (child == template_type or std.mem.eql(u8, @typeName(child), @typeName(template_type))) {
+                    return if (p.is_const) *const impl_type else *impl_type;
+                }
+                return @Pointer(p.size, .{
+                    .@"const" = p.is_const,
+                    .@"volatile" = p.is_volatile,
+                    .@"allowzero" = p.is_allowzero,
+                    .@"align" = p.alignment,
+                    .@"addrspace" = p.address_space,
+                }, substituteTypeInType(child, template_type, impl_type), null);
             }
-            return @Pointer(p.size, .{
-                .@"const" = p.is_const,
-                .@"volatile" = p.is_volatile,
-                .@"allowzero" = p.is_allowzero,
-                .@"align" = p.alignment,
-                .@"addrspace" = p.address_space,
-            }, substituteTypeInType(child, template_type, impl_type), null);
+            if (ti == .@"fn") {
+                return substituteFunctionType(T, template_type, impl_type);
+            }
+            return T;
         }
-        if (ti == .@"fn") {
-            return substituteFunctionType(T, template_type, impl_type);
-        }
-        return T;
-    }
 
         fn eraseSelfParam(comptime FnType: type) type {
             const fn_info = @typeInfo(FnType).@"fn";
@@ -846,7 +935,31 @@ test "Interface reports static methods as incompatible" {
     const message = comptime PluginLikeTemplate.incompatibleMethodMessage(tmpl_func_info, impl_func_info, Impl, true);
 
     try std.testing.expectEqualStrings(
-        "fn build(u32, []const u8): expected fn build(u32, []const u8) -> anyerror!void, found fn build(u32, []const u8) -> void (missing self parameter)",
+        "fn build(u32, []const u8) -> anyerror!void\n    found: fn build(u32, []const u8) -> void\n    mismatch: missing self parameter: interface requires self as the first parameter",
+        message,
+    );
+}
+
+test "Interface reports const self mismatch explicitly" {
+    const PluginLike = struct {
+        pub fn build(_: *@This(), _: u32) anyerror!void {
+            unreachable;
+        }
+    };
+
+    const Impl = struct {
+        pub fn build(_: *const @This(), _: u32) anyerror!void {
+            return;
+        }
+    };
+
+    const PluginLikeTemplate = Template(PluginLike);
+    const tmpl_func_info = comptime reflect.getInfo(PluginLike).type.getFunc("build").?;
+    const impl_func_info = comptime reflect.getInfo(Impl).type.getFunc("build").?;
+    const message = comptime PluginLikeTemplate.incompatibleMethodMessage(tmpl_func_info, impl_func_info, Impl, true);
+
+    try std.testing.expectEqualStrings(
+        "fn build(u32) -> anyerror!void\n    mismatch: self parameter mutability mismatch: expected mutable self, found const self",
         message,
     );
 }
