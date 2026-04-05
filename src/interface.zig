@@ -258,6 +258,17 @@ pub inline fn Template(comptime Tpl: type) type {
             return std.fmt.comptimePrint("fn {s}({s})", .{ tmpl_func_info.name, params_str });
         }
 
+        fn implementationDisplayName(comptime Implementation: type, comptime impl_info: reflect.TypeInfo, comptime simple_names: bool) []const u8 {
+            if (@hasDecl(Implementation, "Name")) {
+                const NameValue = @field(Implementation, "Name");
+                if (@TypeOf(NameValue) == []const u8) {
+                    return NameValue;
+                }
+            }
+
+            return impl_info.toStringEx(simple_names);
+        }
+
         fn validateThis(implementationType: type, comptime verbose: bool) void {
             const Implementation = implementationType;
 
@@ -367,7 +378,8 @@ pub inline fn Template(comptime Tpl: type) type {
                 }
 
                 if (missing_methods.len > 0) {
-                    var error_msg: []const u8 = "Implementation '" ++ impl_info.toStringEx(!verbose) ++ "' ";
+                    const implementation_name = implementationDisplayName(Implementation, impl_info, !verbose);
+                    var error_msg: []const u8 = "Implementation '" ++ implementation_name ++ "' ";
                     error_msg = error_msg ++ "does not satisfy interface '" ++ Name ++ "'. ";
 
                     error_msg = error_msg ++ "Missing methods:\n";
@@ -715,6 +727,24 @@ test "Interface formats expected method signatures cleanly" {
     try std.testing.expectEqualStrings(
         "fn build(u32, []const u8)",
         actual_signature,
+    );
+}
+
+test "Interface prefers implementation Name for diagnostics" {
+    const Impl = struct {
+        pub const Type = u32;
+        pub const Name: []const u8 = "RenderPlugin";
+    };
+    const impl_info = comptime reflect.TypeInfo.from(Impl);
+    const PluginTemplate = Template(struct {
+        pub fn build(_: *@This()) void {
+            unreachable;
+        }
+    });
+
+    try std.testing.expectEqualStrings(
+        "RenderPlugin",
+        comptime PluginTemplate.implementationDisplayName(Impl, impl_info, true),
     );
 }
 
