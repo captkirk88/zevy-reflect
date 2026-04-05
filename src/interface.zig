@@ -234,6 +234,30 @@ pub inline fn Template(comptime Tpl: type) type {
             validateThis(implementationType, true);
         }
 
+        fn isSelfParamType(comptime ParamType: type, comptime SelfType: type) bool {
+            if (ParamType == SelfType) return true;
+            if (@typeInfo(ParamType) != .pointer) return false;
+            return @typeInfo(ParamType).pointer.child == SelfType;
+        }
+
+        fn expectedMethodSignature(comptime tmpl_func_info: reflect.FuncInfo, comptime Implementation: type, comptime simple_names: bool) []const u8 {
+            const omit_self = tmpl_func_info.paramsCount() > 0 and isSelfParamType(tmpl_func_info.params()[0].info.type, Tpl);
+
+            var params_str: []const u8 = "";
+            var first = true;
+            inline for (0..tmpl_func_info.paramsCount()) |i| {
+                const tmpl_param = tmpl_func_info.params()[i];
+                if (omit_self and i == 0) continue;
+
+                const substituted_type = substituteTypeInType(tmpl_param.info.type, Tpl, Implementation);
+                const param_name = if (simple_names) reflect.simplifyTypeName(@typeName(substituted_type)) else @typeName(substituted_type);
+                params_str = if (first) param_name else std.fmt.comptimePrint("{s}, {s}", .{ params_str, param_name });
+                first = false;
+            }
+
+            return std.fmt.comptimePrint("fn {s}({s})", .{ tmpl_func_info.name, params_str });
+        }
+
         fn validateThis(implementationType: type, comptime verbose: bool) void {
             const Implementation = implementationType;
 
@@ -263,34 +287,10 @@ pub inline fn Template(comptime Tpl: type) type {
                         @compileError("We should not be seeing this at all");
                     };
                     const impl_func_info = impl_info.getFunc(method_name);
+                    const expected_signature = expectedMethodSignature(tmpl_func_info, Implementation, !verbose);
 
-                    var func_params: [tmpl_func_info.paramsCount()]reflect.ParamInfo = undefined;
-                    for (0..tmpl_func_info.paramsCount()) |j| {
-                        const tmpl_param = tmpl_func_info.params()[j];
-                        const substituted_type = substituteTypeInType(tmpl_param.info.type, Tpl, Implementation);
-                        func_params[j] = reflect.ParamInfo{
-                            .info = reflect.ShallowTypeInfo.from(substituted_type),
-                            .is_noalias = tmpl_param.is_noalias,
-                            .is_comptime = tmpl_param.is_comptime,
-                        };
-                    }
-
-                    var mixed_func_info: reflect.FuncInfo = .{
-                        .name = tmpl_func_info.name,
-                        .params_storage = undefined,
-                        .params_count = 0,
-                        .return_type = tmpl_func_info.return_type,
-                        .container_type = impl_info.toShallow(),
-                        .hash = tmpl_func_info.hash,
-                        .type = tmpl_func_info.type,
-                        .category = tmpl_func_info.category,
-                    };
-                    for (0..tmpl_func_info.paramsCount()) |i| {
-                        mixed_func_info.params_storage[i] = func_params[i];
-                    }
-                    mixed_func_info.params_count = tmpl_func_info.paramsCount();
                     if (impl_func_info == null) {
-                        missing_methods = missing_methods ++ &[_][]const u8{mixed_func_info.toStringEx(false, !verbose)};
+                        missing_methods = missing_methods ++ &[_][]const u8{expected_signature};
                     } else {
                         // Check if parameters match (handling self parameters)
                         var param_match = true;
@@ -361,7 +361,7 @@ pub inline fn Template(comptime Tpl: type) type {
                         }
 
                         if (!param_match) {
-                            missing_methods = missing_methods ++ &[_][]const u8{mixed_func_info.toStringEx(false, !verbose)};
+                            missing_methods = missing_methods ++ &[_][]const u8{expected_signature};
                         }
                     }
                 }
@@ -695,6 +695,27 @@ test "Interface - reusable validator" {
     const LoggerTemplate = Template(Logger);
     LoggerTemplate.validate(SimpleLogger);
     LoggerTemplate.validate(DetailedLogger);
+}
+
+test "Interface formats expected method signatures cleanly" {
+    const PluginLike = struct {
+        pub fn build(_: *@This(), _: u32, _: []const u8) void {
+            unreachable;
+        }
+    };
+
+    const Impl = struct {};
+    const PluginLikeTemplate = Template(PluginLike);
+    const actual_signature = comptime PluginLikeTemplate.expectedMethodSignature(
+        reflect.getInfo(PluginLike).type.getFunc("build").?,
+        Impl,
+        true,
+    );
+
+    try std.testing.expectEqualStrings(
+        "fn build(u32, []const u8)",
+        actual_signature,
+    );
 }
 
 test "Interface.vTable builds vtable" {

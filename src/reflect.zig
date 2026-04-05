@@ -1464,10 +1464,42 @@ fn extractPointerPrefix(type_name: []const u8) []const u8 {
     return type_name[0..i];
 }
 
+fn findLastTopLevelDot(type_name: []const u8) ?usize {
+    var last_dot: ?usize = null;
+    var paren_depth: usize = 0;
+    var bracket_depth: usize = 0;
+    var brace_depth: usize = 0;
+
+    for (type_name, 0..) |ch, i| {
+        switch (ch) {
+            '(' => paren_depth += 1,
+            ')' => {
+                if (paren_depth > 0) paren_depth -= 1;
+            },
+            '[' => bracket_depth += 1,
+            ']' => {
+                if (bracket_depth > 0) bracket_depth -= 1;
+            },
+            '{' => brace_depth += 1,
+            '}' => {
+                if (brace_depth > 0) brace_depth -= 1;
+            },
+            '.' => {
+                if (paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
+                    last_dot = i;
+                }
+            },
+            else => {},
+        }
+    }
+
+    return last_dot;
+}
+
 /// Simplify a simple (non-fn, non-pointer) type name by removing module prefix.
 /// Returns a slice of the input — no allocation needed.
 fn simplifySimpleTypeName(type_name: []const u8) []const u8 {
-    const last_dot = std.mem.lastIndexOf(u8, type_name, ".") orelse return type_name;
+    const last_dot = findLastTopLevelDot(type_name) orelse return type_name;
     return type_name[last_dot + 1 ..];
 }
 
@@ -1489,6 +1521,18 @@ pub fn simplifyTypeName(type_name: []const u8) []const u8 {
     if (prefix.len > 0) return type_name;
     if (std.mem.startsWith(u8, base, "fn ")) return simplifyFunctionTypeName(base);
     return simplifySimpleTypeName(base);
+}
+
+test "simplifyTypeName preserves top-level generic type names" {
+    const input = "systems.registry.SystemParamRegistry(&.{ systems.params.SystemParam(foo.bar.Baz), foo.bar.Qux }[0..2])";
+    try std.testing.expectEqualStrings(
+        "SystemParamRegistry(&.{ systems.params.SystemParam(foo.bar.Baz), foo.bar.Qux }[0..2])",
+        simplifyTypeName(input),
+    );
+}
+
+test "simplifyTypeName preserves plain module suffix stripping" {
+    try std.testing.expectEqualStrings("Baz", simplifyTypeName("foo.bar.Baz"));
 }
 
 // ===== TESTS =====
