@@ -241,6 +241,10 @@ pub inline fn Template(comptime Tpl: type) type {
         }
 
         fn expectedMethodSignature(comptime tmpl_func_info: reflect.FuncInfo, comptime Implementation: type, comptime simple_names: bool) []const u8 {
+            return expectedMethodSignatureEx(tmpl_func_info, Implementation, simple_names, false);
+        }
+
+        fn expectedMethodSignatureEx(comptime tmpl_func_info: reflect.FuncInfo, comptime Implementation: type, comptime simple_names: bool, comptime include_return: bool) []const u8 {
             const omit_self = tmpl_func_info.paramsCount() > 0 and isSelfParamType(tmpl_func_info.params()[0].info.type, Tpl);
 
             var params_str: []const u8 = "";
@@ -255,7 +259,73 @@ pub inline fn Template(comptime Tpl: type) type {
                 first = false;
             }
 
-            return std.fmt.comptimePrint("fn {s}({s})", .{ tmpl_func_info.name, params_str });
+            if (!include_return) {
+                return std.fmt.comptimePrint("fn {s}({s})", .{ tmpl_func_info.name, params_str });
+            }
+
+            const substituted_return = substituteTypeInType(tmpl_func_info.return_type.info.type, Tpl, Implementation);
+            const return_name = if (simple_names) reflect.simplifyTypeName(@typeName(substituted_return)) else @typeName(substituted_return);
+            return std.fmt.comptimePrint("fn {s}({s}) -> {s}", .{ tmpl_func_info.name, params_str, return_name });
+        }
+
+        fn implementationMethodSignature(comptime impl_func_info: reflect.FuncInfo, comptime Implementation: type, comptime simple_names: bool, comptime include_return: bool) []const u8 {
+            const omit_self = impl_func_info.paramsCount() > 0 and isSelfParamType(impl_func_info.params()[0].info.type, Implementation);
+
+            var params_str: []const u8 = "";
+            var first = true;
+            inline for (0..impl_func_info.paramsCount()) |i| {
+                const impl_param = impl_func_info.params()[i];
+                if (omit_self and i == 0) continue;
+
+                const param_name = if (simple_names) reflect.simplifyTypeName(@typeName(impl_param.info.type)) else @typeName(impl_param.info.type);
+                params_str = if (first) param_name else std.fmt.comptimePrint("{s}, {s}", .{ params_str, param_name });
+                first = false;
+            }
+
+            if (!include_return) {
+                return std.fmt.comptimePrint("fn {s}({s})", .{ impl_func_info.name, params_str });
+            }
+
+            const return_name = if (simple_names) reflect.simplifyTypeName(@typeName(impl_func_info.return_type.info.type)) else @typeName(impl_func_info.return_type.info.type);
+            return std.fmt.comptimePrint("fn {s}({s}) -> {s}", .{ impl_func_info.name, params_str, return_name });
+        }
+
+        fn hasCompatibleReturnType(comptime tmpl_func_info: reflect.FuncInfo, comptime impl_func_info: reflect.FuncInfo, comptime Implementation: type) bool {
+            const expected_return = substituteTypeInType(tmpl_func_info.return_type.info.type, Tpl, Implementation);
+            return expected_return == impl_func_info.return_type.info.type;
+        }
+
+        fn isStaticMethodMissingSelf(comptime tmpl_func_info: reflect.FuncInfo, comptime impl_func_info: reflect.FuncInfo, comptime Implementation: type) bool {
+            if (tmpl_func_info.paramsCount() == 0) return false;
+            if (!isSelfParamType(tmpl_func_info.params()[0].info.type, Tpl)) return false;
+            if (impl_func_info.paramsCount() + 1 != tmpl_func_info.paramsCount()) return false;
+
+            inline for (1..tmpl_func_info.paramsCount()) |tmpl_index| {
+                const expected_type = substituteTypeInType(tmpl_func_info.params()[tmpl_index].info.type, Tpl, Implementation);
+                const impl_param = impl_func_info.params()[tmpl_index - 1];
+                if (impl_param.info.type != expected_type) return false;
+            }
+
+            return true;
+        }
+
+        fn incompatibleMethodMessage(comptime tmpl_func_info: reflect.FuncInfo, comptime impl_func_info: reflect.FuncInfo, comptime Implementation: type, comptime simple_names: bool) []const u8 {
+            const expected_signature = expectedMethodSignatureEx(tmpl_func_info, Implementation, simple_names, true);
+            const actual_signature = implementationMethodSignature(impl_func_info, Implementation, simple_names, true);
+
+            var reason: []const u8 = "signature mismatch";
+            if (isStaticMethodMissingSelf(tmpl_func_info, impl_func_info, Implementation)) {
+                reason = "missing self parameter";
+            } else if (!hasCompatibleReturnType(tmpl_func_info, impl_func_info, Implementation)) {
+                reason = "return type mismatch";
+            }
+
+            return std.fmt.comptimePrint("{s}: expected {s}, found {s} ({s})", .{
+                expectedMethodSignature(tmpl_func_info, Implementation, simple_names),
+                expected_signature,
+                actual_signature,
+                reason,
+            });
         }
 
         fn implementationDisplayName(comptime Implementation: type, comptime impl_info: reflect.TypeInfo, comptime simple_names: bool) []const u8 {
@@ -279,6 +349,7 @@ pub inline fn Template(comptime Tpl: type) type {
                 const tmpl_struct_fields = t_info.fields;
 
                 var missing_methods: []const []const u8 = &.{};
+                var incompatible_methods: []const []const u8 = &.{};
 
                 // Handle template vtables defined as fields (e.g. function pointer structs)
                 if (func_names.len == 0) {
@@ -305,6 +376,7 @@ pub inline fn Template(comptime Tpl: type) type {
                     } else {
                         // Check if parameters match (handling self parameters)
                         var param_match = true;
+                        const return_match = hasCompatibleReturnType(tmpl_func_info, impl_func_info.?, Implementation);
 
                         if (tmpl_func_info.paramsCount() != impl_func_info.?.paramsCount()) {
                             param_match = false;
@@ -371,20 +443,29 @@ pub inline fn Template(comptime Tpl: type) type {
                             }
                         }
 
-                        if (!param_match) {
-                            missing_methods = missing_methods ++ &[_][]const u8{expected_signature};
+                        if (!param_match or !return_match) {
+                            incompatible_methods = incompatible_methods ++ &[_][]const u8{incompatibleMethodMessage(tmpl_func_info, impl_func_info.?, Implementation, !verbose)};
                         }
                     }
                 }
 
-                if (missing_methods.len > 0) {
+                if (missing_methods.len > 0 or incompatible_methods.len > 0) {
                     const implementation_name = implementationDisplayName(Implementation, impl_info, !verbose);
                     var error_msg: []const u8 = "Implementation '" ++ implementation_name ++ "' ";
                     error_msg = error_msg ++ "does not satisfy interface '" ++ Name ++ "'. ";
 
-                    error_msg = error_msg ++ "Missing methods:\n";
-                    for (missing_methods) |method| {
-                        error_msg = error_msg ++ "  - " ++ method ++ "\n";
+                    if (missing_methods.len > 0) {
+                        error_msg = error_msg ++ "Missing methods:\n";
+                        for (missing_methods) |method| {
+                            error_msg = error_msg ++ "  - " ++ method ++ "\n";
+                        }
+                    }
+
+                    if (incompatible_methods.len > 0) {
+                        error_msg = error_msg ++ "Incompatible methods:\n";
+                        for (incompatible_methods) |method| {
+                            error_msg = error_msg ++ "  - " ++ method ++ "\n";
+                        }
                     }
                     @compileError(error_msg);
                 }
@@ -745,6 +826,28 @@ test "Interface prefers implementation Name for diagnostics" {
     try std.testing.expectEqualStrings(
         "RenderPlugin",
         comptime PluginTemplate.implementationDisplayName(Impl, impl_info, true),
+    );
+}
+
+test "Interface reports static methods as incompatible" {
+    const PluginLike = struct {
+        pub fn build(_: *@This(), _: u32, _: []const u8) anyerror!void {
+            unreachable;
+        }
+    };
+
+    const Impl = struct {
+        pub fn build(_: u32, _: []const u8) void {}
+    };
+
+    const PluginLikeTemplate = Template(PluginLike);
+    const tmpl_func_info = comptime reflect.getInfo(PluginLike).type.getFunc("build").?;
+    const impl_func_info = comptime reflect.getInfo(Impl).type.getFunc("build").?;
+    const message = comptime PluginLikeTemplate.incompatibleMethodMessage(tmpl_func_info, impl_func_info, Impl, true);
+
+    try std.testing.expectEqualStrings(
+        "fn build(u32, []const u8): expected fn build(u32, []const u8) -> anyerror!void, found fn build(u32, []const u8) -> void (missing self parameter)",
+        message,
     );
 }
 
