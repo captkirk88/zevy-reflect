@@ -2,7 +2,7 @@
 
 A lightweight reflection and change detection library for Zig.
 
-[![Zig Version](https://img.shields.io/badge/zig-0.15.1+-blue.svg)](https://ziglang.org/)
+[![Zig Version](https://img.shields.io/badge/zig-0.16.dev+-blue.svg)](https://ziglang.org/)
 
 ## Features
 
@@ -11,6 +11,8 @@ A lightweight reflection and change detection library for Zig.
     - **VTable Generation**: Create vtables for dynamic dispatch based on interfaces, with support for interface extension. Tested using std.mem.Allocation.VTable interface.
 - **Function Verification**: Compile-time validation of function signatures with dynamic error reporting for type mismatches
 - **Dynamic Error Types**: Utilities for creating error sets with dynamic names at comptime
+- **Code Generation Contracts**: Build reusable compile-time generators with typed input and config validation
+- **Mixin Generation**: Generate new types by mixing two existing types together (supports mixin types chaining), with configurable conflict resolution strategies
 - **Change Detection**: Track changes to struct fields with minimal memory overhead (8 bytes)
 - **Zero Dependencies**: Pure Zig implementation with no external dependencies
 
@@ -88,6 +90,10 @@ comptime {
     // Type mismatches generate specific errors like "IncorrectArgAt_0_Expected_i32_Got_f32"
 }
 ```
+
+### Code Generation
+
+See [MIXIN_CODEGEN.md](MIXIN_CODEGEN.md) for the mixin-specific API.
 
 ### Interface Validation and VTable
 

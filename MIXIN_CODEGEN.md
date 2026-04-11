@@ -5,6 +5,8 @@
 
 The `codegen.mixin_generator` module provides true mixin behavior through compile-time code generation. The mixin generator creates actual Zig code where all methods are directly available.
 
+The module now exposes a reusable `MixinGenerator` built on top of the generic `codegen.generator.Generator(Input, Config)` contract. That keeps mixin code generation uniform with other generators while leaving `MixinConfig` as plain data.
+
 ## Comparison
 
 ### Using Mixin Generator (Code Generation)
@@ -49,9 +51,11 @@ const Loggable = struct {
 };
 
 // Generate the mixin code at compile time
-const mixin_code = comptime zevy_reflect.codegen.mixin_generator.generateMixinCode(
-    Player,
-    Loggable,
+const mixin_code = comptime zevy_reflect.codegen.mixin_generator.generate(
+    .{
+        .base = Player,
+        .extension = Loggable,
+    },
     .{
         .type_name = "LoggablePlayer",
         .base_type_name = "Player",
@@ -82,7 +86,7 @@ pub fn build(b: *std.Build) void {
     // Add your generated mixin code
     const loggable_player_file = gen_step.add(
         "LoggablePlayer.zig",
-        generated_mixin_code, // From generateMixinCode()
+        generated_mixin_code, // From mixin_generator.generate()
     );
     
     // Make it available to your executable
@@ -111,6 +115,34 @@ pub fn build(b: *std.Build) void {
 - **`base_import_path`**: Module path to import base type
 - **`extension_import_path`**: Module path to import extension type
 - **`conflict_strategy`**: How to handle method name conflicts
+- **`emit_field_comments`**: Emit field summaries as comments
+- **`emit_conflict_comments`**: Emit comments for skipped conflicting methods
+- **`emit_init_base`**: Emit the default-extension convenience initializer
+
+### `MixinInput`
+
+- **`base`**: Base type to wrap
+- **`extension`**: Extension type to wrap
+
+### Generic Generator Contract
+
+```zig
+const Generator = zevy_reflect.codegen.generator.Generator;
+
+const MyGenerator = Generator(MyInput, MyConfig).wrap(struct {
+    pub fn validateConfig(comptime config: MyConfig) void {
+        _ = config;
+    }
+
+    pub fn generate(comptime input: MyInput, comptime config: MyConfig) []const u8 {
+        _ = input;
+        _ = config;
+        return "// generated";
+    }
+});
+```
+
+`MixinGenerator` follows the same pattern internally.
 
 ### Conflict Strategies
 
@@ -157,10 +189,10 @@ const Loggable = struct { ... };
 const Serializable = struct { ... };
 
 // 2. Generate first mixin
-const LoggablePlayer = generateMixinCode(Player, Loggable, ...);
+const LoggablePlayer = mixin_generator.generate(.{ .base = Player, .extension = Loggable }, ...);
 
 // 3. Generate second mixin (composing with previous result)
-const FullPlayer = generateMixinCode(LoggablePlayer, Serializable, ...);
+const FullPlayer = mixin_generator.generate(.{ .base = LoggablePlayer, .extension = Serializable }, ...);
 
 // 4. Use in code
 var player = FullPlayer.init(...);

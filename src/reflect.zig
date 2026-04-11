@@ -193,6 +193,7 @@ pub const FuncInfo = struct {
             const ti = @typeInfo(T);
             // Check if this is a generic function (returns type)
             if (ti == .@"fn") {
+                if (ti.@"fn".is_generic) return .Generic;
                 // Can't determine method vs func without full reflection
                 // Just check if it's generic by looking at return type
                 if (ti.@"fn".return_type) |ret| {
@@ -1181,7 +1182,7 @@ fn lazyGetFunc(type_info: *const TypeInfo, comptime func_name: []const u8) ?Func
 
     var param_count: usize = 0;
     inline for (func_type_info.@"fn".params) |param| {
-        const param_type = param.type.?;
+        const param_type = param.type orelse void;
         func_info.params_storage[param_count] = ParamInfo{ .info = ShallowTypeInfo.from(param_type), .is_noalias = param.is_noalias };
         param_count += 1;
     }

@@ -8,6 +8,7 @@ const interf = @import("interface.zig");
 
 // Code generation utilities
 pub const codegen = struct {
+    pub const generator = @import("codegen/generator.zig");
     pub const mixin_generator = @import("codegen/mixin_generator.zig");
 };
 
@@ -58,4 +59,6 @@ test {
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(change);
     std.testing.refAllDecls(interf);
+    std.testing.refAllDecls(codegen.generator);
+    std.testing.refAllDecls(codegen.mixin_generator);
 }
