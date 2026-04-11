@@ -70,7 +70,7 @@ pub fn Change(comptime T: type) type {
 
         pub const Child = T;
 
-        const Inner = struct {
+        const Tracked = struct {
             data: T,
             prior_hash: u64,
             allocator: Allocator,
@@ -78,7 +78,7 @@ pub fn Change(comptime T: type) type {
 
         /// Create a new Change tracker with initial data
         pub fn init(allocator: Allocator, data: T) !*Self {
-            const inner = try allocator.create(Inner);
+            const inner = try allocator.create(Tracked);
             inner.* = .{
                 .data = data,
                 .prior_hash = computeHash(data),
@@ -96,7 +96,7 @@ pub fn Change(comptime T: type) type {
 
         /// Get mutable access to the data
         pub fn get(self: *Self) *T {
-            const inner: *Inner = @ptrCast(@alignCast(self));
+            const inner: *Tracked = @ptrCast(@alignCast(self));
             if (self.isChanged()) {
                 @panic("Previous unfinished changes");
             }
@@ -105,19 +105,19 @@ pub fn Change(comptime T: type) type {
 
         /// Get const access to the data
         pub fn getConst(self: *const Self) *const T {
-            const inner: *const Inner = @ptrCast(@alignCast(self));
+            const inner: *const Tracked = @ptrCast(@alignCast(self));
             return &inner.data;
         }
 
         /// Check if changes have occurred by comparing current hash to prior
         pub fn isChanged(self: *const Self) bool {
-            const inner: *const Inner = @ptrCast(@alignCast(self));
+            const inner: *const Tracked = @ptrCast(@alignCast(self));
             const current_hash = computeHash(inner.data);
             return current_hash != inner.prior_hash;
         }
 
         pub fn tryFinish(self: *Self) bool {
-            const inner: *Inner = @ptrCast(@alignCast(self));
+            const inner: *Tracked = @ptrCast(@alignCast(self));
             if (!self.isChanged()) return false;
             inner.prior_hash = computeHash(inner.data);
             return true;
@@ -126,14 +126,14 @@ pub fn Change(comptime T: type) type {
         /// Call this when you're done processing the changes
         /// Updates the prior hash to match current state
         pub fn finish(self: *Self) void {
-            const inner: *Inner = @ptrCast(@alignCast(self));
+            const inner: *Tracked = @ptrCast(@alignCast(self));
             if (!self.isChanged()) @panic("No changes detected");
             inner.prior_hash = computeHash(inner.data);
         }
 
         /// Deinitialize and free the Change tracker
         pub fn deinit(self: *Self) void {
-            const inner: *Inner = @ptrCast(@alignCast(self));
+            const inner: *Tracked = @ptrCast(@alignCast(self));
             // Call deinit if the type has one
             if (comptime reflect.hasFunc(T, "deinit")) {
                 inner.data.deinit();
