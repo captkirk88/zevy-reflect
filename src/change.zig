@@ -3,6 +3,34 @@ const reflect = @import("reflect.zig");
 
 const Allocator = std.mem.Allocator;
 
+/// Recursively hash a value of any type, skipping struct fields prefixed with `_`.
+fn hashValue(hasher: *std.hash.Wyhash, comptime FT: type, value: FT) void {
+    switch (@typeInfo(FT)) {
+        .@"struct" => |s| {
+            inline for (s.fields) |f| {
+                if (f.name.len > 0 and f.name[0] != '_') {
+                    hashValue(hasher, f.type, @field(value, f.name));
+                }
+            }
+        },
+        .@"enum" => hasher.update(std.mem.asBytes(&value)),
+        .@"union" => |u| {
+            if (u.tag_type != null) {
+                const tag = std.meta.activeTag(value);
+                hasher.update(std.mem.asBytes(&tag));
+                switch (value) {
+                    inline else => |payload| {
+                        hashValue(hasher, @TypeOf(payload), payload);
+                    },
+                }
+            } else {
+                hasher.update(std.mem.asBytes(&value));
+            }
+        },
+        else => hasher.update(std.mem.asBytes(&value)),
+    }
+}
+
 /// Change tracking container for any struct type T
 ///
 /// Automatically detects changes by comparing a hash of the current data
@@ -27,11 +55,13 @@ const Allocator = std.mem.Allocator;
 /// }
 pub fn Change(comptime T: type) type {
     const type_info = @typeInfo(T);
-    if (type_info != .@"struct") {
-        @compileError(std.fmt.comptimePrint("Change() requires type '{s}' to be a struct, got: {s}", .{ @typeName(T), @tagName(type_info) }));
-    }
-    const fields = type_info.@"struct".fields;
-    if (fields.len == 0) {
+    const fields_len: usize = switch (type_info) {
+        .@"struct" => |s| s.fields.len,
+        .@"enum" => |e| e.fields.len,
+        .@"union" => |u| u.fields.len,
+        else => @compileError(std.fmt.comptimePrint("Change() requires type '{s}' to be a struct, enum, or union, got: {s}", .{ @typeName(T), @tagName(type_info) })),
+    };
+    if (fields_len == 0) {
         @compileError(std.fmt.comptimePrint("Change() requires type '{s}' to have fields", .{@typeName(T)}));
     }
 
@@ -57,15 +87,10 @@ pub fn Change(comptime T: type) type {
             return @ptrCast(inner);
         }
 
-        /// Compute hash of all trackable fields (ignoring fields starting with `_`)
+        /// Compute hash of all trackable fields (ignoring struct fields starting with `_`)
         fn computeHash(data: T) u64 {
             var hasher = std.hash.Wyhash.init(0);
-            inline for (fields) |field| {
-                if (field.name.len > 0 and field.name[0] != '_') {
-                    const field_value = @field(data, field.name);
-                    hasher.update(std.mem.asBytes(&field_value));
-                }
-            }
+            hashValue(&hasher, T, data);
             return hasher.final();
         }
 
@@ -238,4 +263,43 @@ test "Change - natural field access" {
     // Finish with changes
     change_tracker.finish();
     try testing.expect(!change_tracker.isChanged());
+}
+
+test "Change - enum" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const Mode = enum { windowed, fullscreen, borderless };
+
+    var tracker = try Change(Mode).init(allocator, .windowed);
+    defer tracker.deinit();
+
+    try testing.expect(!tracker.isChanged());
+
+    tracker.get().* = .fullscreen;
+
+    try testing.expect(tracker.isChanged());
+    tracker.finish();
+    try testing.expect(!tracker.isChanged());
+}
+
+test "Change - tagged union" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const Value = union(enum) { int: i32, float: f64, flag: bool };
+
+    var tracker = try Change(Value).init(allocator, .{ .int = 0 });
+    defer tracker.deinit();
+
+    try testing.expect(!tracker.isChanged());
+
+    tracker.get().* = .{ .int = 42 };
+    try testing.expect(tracker.isChanged());
+    tracker.finish();
+
+    tracker.get().* = .{ .float = 3.14 };
+    try testing.expect(tracker.isChanged());
+    tracker.finish();
+    try testing.expect(!tracker.isChanged());
 }
