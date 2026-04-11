@@ -99,6 +99,11 @@ pub fn Change(comptime T: type) type {
             return &self._data;
         }
 
+        /// Return a copy of the current value.
+        pub fn value(self: *const Self) T {
+            return self._data;
+        }
+
         /// Check if changes have occurred by comparing current hash to prior
         pub fn isChanged(self: *const Self) bool {
             return computeHash(self._data) != self._prior_hash;
