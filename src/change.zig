@@ -11,7 +11,10 @@ fn hashValue(hasher: *std.hash.Wyhash, comptime FT: type, value: FT) void {
                 }
             }
         },
-        .@"enum" => hasher.update(std.mem.asBytes(&value)),
+        .@"enum" => {
+            const tag_int = @intFromEnum(value);
+            hasher.update(std.mem.asBytes(&tag_int));
+        },
         .@"union" => |u| {
             if (u.tag_type != null) {
                 const tag = std.meta.activeTag(value);
