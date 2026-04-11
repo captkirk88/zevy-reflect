@@ -5,12 +5,12 @@
 
     .fingerprint = 0xac92e58c7034bf39, // Changing this has security and trust implications.
 
-    .minimum_zig_version = "0.16.0-dev.2960+ce1f7136a",
+    .minimum_zig_version = "0.16.0-dev.3142+5ccfeb926",
 
     .dependencies = .{
         .zevy_buildtools = .{
-            .url = "git+https://github.com/captkirk88/zevy-buildtools#88cd52945acc7cd70d916fb185c0b6e7864b8fac",
-            .hash = "zevy_buildtools-1.0.0-AG3r_F6RAAD0Bqyn4nImjfm0JKQoL0F4f7OJAyZ8bO5d",
+            .url = "git+https://github.com/captkirk88/zevy-buildtools#73dbb1c11d076af3934e9c4339ad2a4f4265b19e",
+            .hash = "zevy_buildtools-1.1.0-AG3r_P2QAACstZJiOpk_0yn08wbEDVk_Aoi4Fc9dHKoS",
         },
     },
     .paths = .{
