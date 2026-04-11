@@ -1,8 +1,6 @@
 const std = @import("std");
 const reflect = @import("reflect.zig");
 
-const Allocator = std.mem.Allocator;
-
 /// Recursively hash a value of any type, skipping struct fields prefixed with `_`.
 fn hashValue(hasher: *std.hash.Wyhash, comptime FT: type, value: FT) void {
     switch (@typeInfo(FT)) {
@@ -31,11 +29,10 @@ fn hashValue(hasher: *std.hash.Wyhash, comptime FT: type, value: FT) void {
     }
 }
 
-/// Change tracking container for any struct type T
+/// Change tracking container for any type T with fields (struct, enum, or tagged union).
 ///
-/// Automatically detects changes by comparing a hash of the current data
-/// against a stored prior hash. Only uses 8 bytes of additional memory.
-/// Fields with names starting with `_` are ignored for change tracking.
+/// Embeddable by value in other structs. No heap allocation.
+/// Struct fields prefixed with `_` on the tracked type are ignored for change detection.
 ///
 /// Call init() to snapshot the current state, isChanged() to detect modifications.
 ///
@@ -45,8 +42,7 @@ fn hashValue(hasher: *std.hash.Wyhash, comptime FT: type, value: FT) void {
 ///   b: f32,
 ///   _internal: bool, // ignored for change tracking
 /// };
-/// var changeable = try Change(MyStruct).init(allocator, .{ .a = 0, .b = 0.0, ._internal = false });
-/// defer changeable.deinit(allocator);
+/// var changeable = Change(MyStruct).init(.{ .a = 0, .b = 0.0, ._internal = false });
 /// var data = changeable.get();
 /// data.a = 42;
 /// if (changeable.isChanged()) {
@@ -65,26 +61,21 @@ pub fn Change(comptime T: type) type {
         @compileError(std.fmt.comptimePrint("Change() requires type '{s}' to have fields", .{@typeName(T)}));
     }
 
-    return opaque {
+    return struct {
         const Self = @This();
 
         pub const Child = T;
 
-        const Tracked = struct {
-            data: T,
-            prior_hash: u64,
-            allocator: Allocator,
-        };
+        _data: T,
+        _prior_hash: u64,
 
-        /// Create a new Change tracker with initial data
-        pub fn init(allocator: Allocator, data: T) !*Self {
-            const inner = try allocator.create(Tracked);
-            inner.* = .{
-                .data = data,
-                .prior_hash = computeHash(data),
-                .allocator = allocator,
+        /// Create a new Change tracker with initial data.
+        /// Comptime-evaluable; usable as a struct field default value.
+        pub fn init(data: T) Self {
+            return .{
+                ._data = data,
+                ._prior_hash = computeHash(data),
             };
-            return @ptrCast(inner);
         }
 
         /// Compute hash of all trackable fields (ignoring struct fields starting with `_`)
@@ -94,59 +85,46 @@ pub fn Change(comptime T: type) type {
             return hasher.final();
         }
 
-        /// Get mutable access to the data
+        /// Get mutable access to the data. Panics if there are unfinished changes.
         pub fn get(self: *Self) *T {
-            const inner: *Tracked = @ptrCast(@alignCast(self));
-            if (self.isChanged()) {
-                @panic("Previous unfinished changes");
-            }
-            return &inner.data;
+            if (self.isChanged()) @panic("Previous unfinished changes");
+            return &self._data;
         }
 
         /// Get const access to the data
         pub fn getConst(self: *const Self) *const T {
-            const inner: *const Tracked = @ptrCast(@alignCast(self));
-            return &inner.data;
+            return &self._data;
         }
 
         /// Check if changes have occurred by comparing current hash to prior
         pub fn isChanged(self: *const Self) bool {
-            const inner: *const Tracked = @ptrCast(@alignCast(self));
-            const current_hash = computeHash(inner.data);
-            return current_hash != inner.prior_hash;
+            return computeHash(self._data) != self._prior_hash;
         }
 
         pub fn tryFinish(self: *Self) bool {
-            const inner: *Tracked = @ptrCast(@alignCast(self));
             if (!self.isChanged()) return false;
-            inner.prior_hash = computeHash(inner.data);
+            self._prior_hash = computeHash(self._data);
             return true;
         }
 
         /// Call this when you're done processing the changes
         /// Updates the prior hash to match current state
         pub fn finish(self: *Self) void {
-            const inner: *Tracked = @ptrCast(@alignCast(self));
             if (!self.isChanged()) @panic("No changes detected");
-            inner.prior_hash = computeHash(inner.data);
+            self._prior_hash = computeHash(self._data);
         }
 
-        /// Deinitialize and free the Change tracker
+        /// Calls deinit on the tracked value if it has one.
         pub fn deinit(self: *Self) void {
-            const inner: *Tracked = @ptrCast(@alignCast(self));
-            // Call deinit if the type has one
             if (comptime reflect.hasFunc(T, "deinit")) {
-                inner.data.deinit();
+                self._data.deinit();
             }
-            const allocator = inner.allocator;
-            allocator.destroy(inner);
         }
     };
 }
 
 test "Change - initialization and basic operations" {
     const testing = std.testing;
-    const allocator = testing.allocator;
 
     const TestStruct = struct {
         id: u32,
@@ -154,14 +132,11 @@ test "Change - initialization and basic operations" {
         active: bool,
     };
 
-    const test_data = TestStruct{
+    var change_tracker = Change(TestStruct).init(.{
         .id = 42,
         .name = "test",
         .active = true,
-    };
-
-    var change_tracker = try Change(TestStruct).init(allocator, test_data);
-    defer change_tracker.deinit();
+    });
 
     // Test direct access
     const data = change_tracker.getConst();
@@ -175,7 +150,6 @@ test "Change - initialization and basic operations" {
 
 test "Change - commit and reset workflow" {
     const testing = std.testing;
-    const allocator = testing.allocator;
 
     const TestStruct = struct {
         score: u32,
@@ -183,12 +157,11 @@ test "Change - commit and reset workflow" {
         name: []const u8,
     };
 
-    var change_tracker = try Change(TestStruct).init(allocator, .{
+    var change_tracker = Change(TestStruct).init(.{
         .score = 100,
         .level = 1,
         .name = "player",
     });
-    defer change_tracker.deinit();
 
     // No changes yet
     try testing.expect(!change_tracker.isChanged());
@@ -211,15 +184,13 @@ test "Change - commit and reset workflow" {
 
 test "Change - defer reset pattern" {
     const testing = std.testing;
-    const allocator = testing.allocator;
 
     const TestStruct = struct {
         x: i32,
         y: i32,
     };
 
-    var change_tracker = try Change(TestStruct).init(allocator, .{ .x = 10, .y = 20 });
-    defer change_tracker.deinit();
+    var change_tracker = Change(TestStruct).init(.{ .x = 10, .y = 20 });
 
     {
         defer change_tracker.finish();
@@ -241,15 +212,13 @@ test "Change - defer reset pattern" {
 
 test "Change - natural field access" {
     const testing = std.testing;
-    const allocator = testing.allocator;
 
     const TestStruct = struct {
         score: u32,
         name: []const u8,
     };
 
-    var change_tracker = try Change(TestStruct).init(allocator, .{ .score = 0, .name = "hero" });
-    defer change_tracker.deinit();
+    var change_tracker = Change(TestStruct).init(.{ .score = 0, .name = "hero" });
 
     // Natural field access
     var data = change_tracker.get();
@@ -267,12 +236,10 @@ test "Change - natural field access" {
 
 test "Change - enum" {
     const testing = std.testing;
-    const allocator = testing.allocator;
 
     const Mode = enum { windowed, fullscreen, borderless };
 
-    var tracker = try Change(Mode).init(allocator, .windowed);
-    defer tracker.deinit();
+    var tracker = Change(Mode).init(.windowed);
 
     try testing.expect(!tracker.isChanged());
 
@@ -285,12 +252,10 @@ test "Change - enum" {
 
 test "Change - tagged union" {
     const testing = std.testing;
-    const allocator = testing.allocator;
 
     const Value = union(enum) { int: i32, float: f64, flag: bool };
 
-    var tracker = try Change(Value).init(allocator, .{ .int = 0 });
-    defer tracker.deinit();
+    var tracker = Change(Value).init(.{ .int = 0 });
 
     try testing.expect(!tracker.isChanged());
 

@@ -56,4 +56,6 @@ pub const utils = @import("utils.zig");
 
 test {
     std.testing.refAllDecls(@This());
+    std.testing.refAllDecls(change);
+    std.testing.refAllDecls(interf);
 }
