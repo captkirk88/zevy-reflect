@@ -226,12 +226,22 @@ pub inline fn Template(comptime Tpl: type) type {
 
         /// Validates that a type satisfies this interface.
         pub fn validate(implementationType: type) void {
-            validateThis(implementationType, false);
+            validateThis(implementationType, false, null);
+        }
+
+        /// Validates that a type satisfies this interface and reports the callsite in diagnostics.
+        pub fn validateAt(implementationType: type, comptime validation_site: std.builtin.SourceLocation) void {
+            validateThis(implementationType, false, validation_site);
         }
 
         /// Validates that a type satisfies this interface with verbose error messages.
         pub fn validateVerbose(implementationType: type) void {
-            validateThis(implementationType, true);
+            validateThis(implementationType, true, null);
+        }
+
+        /// Validates that a type satisfies this interface with verbose error messages and reports the callsite in diagnostics.
+        pub fn validateVerboseAt(implementationType: type, comptime validation_site: std.builtin.SourceLocation) void {
+            validateThis(implementationType, true, validation_site);
         }
 
         fn isSelfParamType(comptime ParamType: type, comptime SelfType: type) bool {
@@ -428,7 +438,7 @@ pub inline fn Template(comptime Tpl: type) type {
             return impl_info.toStringEx(simple_names);
         }
 
-        fn validateThis(implementationType: type, comptime verbose: bool) void {
+        fn validateThis(implementationType: type, comptime verbose: bool, comptime validation_site: ?std.builtin.SourceLocation) void {
             const Implementation = implementationType;
 
             comptime {
@@ -541,7 +551,11 @@ pub inline fn Template(comptime Tpl: type) type {
                 if (missing_methods.len > 0 or incompatible_methods.len > 0) {
                     const implementation_name = implementationDisplayName(Implementation, impl_info, !verbose);
                     var error_msg: []const u8 = "Implementation '" ++ implementation_name ++ "' ";
-                    error_msg = error_msg ++ "does not satisfy interface '" ++ Name ++ "'. ";
+                    error_msg = error_msg ++ "does not satisfy interface '" ++ Name ++ "'.\n";
+
+                    if (validation_site) |site| {
+                        error_msg = error_msg ++ "Validation site: " ++ formatSourceLocation(site) ++ "\n";
+                    }
 
                     if (missing_methods.len > 0) {
                         error_msg = error_msg ++ "Missing methods:\n";
@@ -758,6 +772,14 @@ pub inline fn Template(comptime Tpl: type) type {
     };
 }
 
+fn formatSourceLocation(comptime location: std.builtin.SourceLocation) []const u8 {
+    if (location.module.len == 0) {
+        return std.fmt.comptimePrint("{s}:{d}:{d}", .{ location.file, location.line, location.column });
+    }
+
+    return std.fmt.comptimePrint("{s}:{s}:{d}:{d}", .{ location.module, location.file, location.line, location.column });
+}
+
 // Top-level helper for Templates to populate struct fields from template info
 fn populate_fields(comptime start: usize, tmpl_struct_fields: []const reflect.FieldInfo, func_names: []const []const u8, template_info: reflect.TypeInfo, fields: anytype, use_func_ptr: bool) void {
     var index = start;
@@ -915,6 +937,21 @@ test "Interface prefers implementation Name for diagnostics" {
     try std.testing.expectEqualStrings(
         "RenderPlugin",
         comptime PluginTemplate.implementationDisplayName(Impl, impl_info, true),
+    );
+}
+
+test "Formats validation site for diagnostics" {
+    const location: std.builtin.SourceLocation = .{
+        .module = "zevy_raylib",
+        .file = "src/root.zig",
+        .fn_name = "plug",
+        .line = 42,
+        .column = 7,
+    };
+
+    try std.testing.expectEqualStrings(
+        "zevy_raylib:src/root.zig:42:7",
+        comptime formatSourceLocation(location),
     );
 }
 

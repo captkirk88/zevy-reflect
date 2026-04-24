@@ -99,6 +99,8 @@ See [MIXIN_CODEGEN.md](MIXIN_CODEGEN.md) for the mixin-specific API.
 
 `Template(...)` provides a compile-time validator and a typed vtable generator. Useful when you want an explicit interface and a vtable for dynamic dispatch. `Template(...).Interface` is the interface type.
 
+If you want validation errors to include the user callsite that triggered validation, use `Template(...).validateAt(Impl, @src())` or `validateVerboseAt(Impl, @src())`.
+
 ```zig
 
 This is a different approach to interfaces in Zig.  Hopefully more useful and generally easier to integrate.
