@@ -1,4 +1,4 @@
-const std = @import("std");
+﻿const std = @import("std");
 const reflect = @import("reflect.zig");
 
 /// Check if a type is an instantiation of a generic type with the given base name.
@@ -171,17 +171,111 @@ pub fn hasDeinit(comptime T: type) bool {
     }
 }
 
-/// Create a dynamic error set with a single error whose name is given by the comptime string.
-pub fn DynamicError(comptime name: [:0]const u8) type {
-    _ = name;
-    // Zig 0.16 removed @Type for constructing error sets; use anyerror as a fallback.
-    return anyerror;
+/// A simple Result type that can be used in comptime code.
+///
+/// *Maybe one day Zig will have closures...*
+pub fn Result(comptime Ok: type, comptime Err: type) type {
+    return union(enum) {
+        Ok: Ok,
+        Err: Err,
+
+        pub fn success(value: Ok) Result(Ok, Err) {
+            return Result(Ok, Err){ .Ok = value };
+        }
+
+        pub fn fail(error_: Err) Result(Ok, Err) {
+            return Result(Ok, Err){ .Err = error_ };
+        }
+
+        pub fn err(err_: anyerror) Result(Ok, Err) {
+            return Result(Ok, Err){ .Err = @as(Err, @errorName(err_)) };
+        }
+
+        pub fn isOk(self: @This()) bool {
+            return switch (self) {
+                .Ok => true,
+                .Err => false,
+            };
+        }
+
+        pub fn unwrap(self: @This()) Ok {
+            return switch (self) {
+                .Ok => self.Ok,
+                .Err => @panic("called unwrap on an Err value"),
+            };
+        }
+
+        pub fn unwrapErr(self: @This()) Err {
+            return switch (self) {
+                .Ok => @panic("called unwrapErr on an Ok value"),
+                .Err => self.Err,
+            };
+        }
+
+        pub fn expect(self: @This(), message: []const u8) Ok {
+            return switch (self) {
+                .Ok => self.Ok,
+                .Err => @panic(message),
+            };
+        }
+
+        pub fn expectErr(self: @This(), message: []const u8) Err {
+            return switch (self) {
+                .Ok => @panic(message),
+                .Err => self.Err,
+            };
+        }
+
+        pub fn map(self: @This(), comptime F: fn (Ok) Ok) Result(Ok, Err) {
+            return switch (self) {
+                .Ok => Result(Ok, Err){ .Ok = F(self.Ok) },
+                .Err => self,
+            };
+        }
+
+        pub fn mapErr(self: @This(), comptime F: fn (Err) Err) Result(Ok, Err) {
+            return switch (self) {
+                .Ok => self,
+                .Err => Result(Ok, Err){ .Err = F(self.Err) },
+            };
+        }
+
+        pub fn andThen(self: @This(), comptime F: fn (Ok) Result(Ok, Err)) Result(Ok, Err) {
+            return switch (self) {
+                .Ok => F(self.Ok),
+                .Err => self,
+            };
+        }
+
+        pub fn orElse(self: @This(), comptime F: fn (Err) Result(Ok, Err)) Result(Ok, Err) {
+            return switch (self) {
+                .Ok => self,
+                .Err => F(self.Err),
+            };
+        }
+
+        pub fn remapOk(self: @This(), comptime NewOk: type, comptime F: fn (Ok) NewOk) Result(NewOk, Err) {
+            return switch (self) {
+                .Ok => Result(NewOk, Err){ .Ok = F(self.Ok) },
+                .Err => Result(NewOk, Err){ .Err = self.Err },
+            };
+        }
+
+        pub fn remapError(self: @This(), comptime NewErr: type, comptime F: fn (Err) NewErr) Result(Ok, NewErr) {
+            return switch (self) {
+                .Ok => Result(Ok, NewErr){ .Ok = self.Ok },
+                .Err => Result(Ok, NewErr){ .Err = F(self.Err) },
+            };
+        }
+    };
 }
 
-/// Append a dynamic error to an existing error set, returning the merged error set.
-pub fn MergeDynamicError(comptime BaseError: type, comptime dynamic_error_name: [:0]const u8) type {
-    const MergedDynamicError = DynamicError(dynamic_error_name);
-    return BaseError || MergedDynamicError;
+test "Result type" {
+    const MyResult = Result(u32, error{ A, B });
+    const r1 = MyResult{ .Ok = 42 };
+    const r2 = MyResult{ .Err = error.A };
+    try std.testing.expect(r1.Ok == 42);
+    try std.testing.expect(r2.Err == error.A);
 }
 
 test "isGeneric - primitive type" {
@@ -270,25 +364,6 @@ test "getPublicTypes - no public types" {
 test "getPublicTypes - primitive type" {
     const result = getPublicTypes(u32);
     try std.testing.expect(result == null);
-}
-
-test "DynamicError" {
-    const MyError = DynamicError("Foo");
-    const err: MyError = MyError.Foo;
-    // narrowed type might no longer == MyError in zig 0.16.0
-    // try std.testing.expect(@TypeOf(err) == MyError);
-    const name = @errorName(err);
-    try std.testing.expectEqualStrings("Foo", name);
-}
-
-test "MergeDynamicError" {
-    const BaseError = error{ A, B };
-    const Appended = MergeDynamicError(BaseError, "C");
-    const errC: Appended = Appended.C;
-    // try std.testing.expect(@TypeOf(errC) == Appended);
-    try std.testing.expectEqualStrings("C", @errorName(errC));
-    const errA = Appended.A;
-    try std.testing.expectEqualStrings("A", @errorName(errA));
 }
 
 fn Gen(comptime T: type) type {

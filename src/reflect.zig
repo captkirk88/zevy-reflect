@@ -1295,7 +1295,7 @@ pub inline fn hasFunc(comptime T: type, comptime func_name: []const u8) bool {
 /// If arg_types is null, only the function name is checked.
 /// If `func_name` is a method of `T` you do not need to include the self reference.
 pub inline fn hasFuncWithArgs(comptime T: type, comptime func_name: []const u8, comptime arg_types: ?[]const type) bool {
-    return comptime verifyFuncWithArgs(T, func_name, arg_types, null) catch false;
+    return comptime verifyFuncWithArgs(T, func_name, arg_types, null).isOk();
 }
 
 /// Check if a struct has a function with the given name, argument types, and return type.
@@ -1303,7 +1303,7 @@ pub inline fn hasFuncWithArgs(comptime T: type, comptime func_name: []const u8, 
 /// If arg_types is null, only the function name and return type are checked.
 /// If `func_name` is a method of `T` you do not need to include the self reference.
 pub inline fn hasFuncWithArgsAndReturn(comptime T: type, comptime func_name: []const u8, comptime arg_types: ?[]const type, return_type: type) bool {
-    return comptime verifyFuncWithArgs(T, func_name, arg_types, return_type) catch false;
+    return comptime verifyFuncWithArgs(T, func_name, arg_types, return_type).isOk();
 }
 
 /// Verify that a struct has a function with the given name and argument types.
@@ -1325,17 +1325,17 @@ pub inline fn hasFuncWithArgsAndReturn(comptime T: type, comptime func_name: []c
 /// Error variants for incorrect argument types include the expected and actual types in the error name, e.g., `IncorrectType_Expected_i32_Got_f32`.
 ///
 /// *Must be called at comptime.*
-pub fn verifyFuncWithArgs(comptime T: type, comptime func_name: []const u8, comptime arg_types: ?[]const type, comptime return_type: ?type) anyerror!bool {
+pub fn verifyFuncWithArgs(comptime T: type, comptime func_name: []const u8, comptime arg_types: ?[]const type, comptime return_type: ?type) util.Result(bool, [:0]const u8) {
     const type_info = @typeInfo(T);
     if (type_info == .pointer) {
         const Child = type_info.pointer.child;
         return verifyFuncWithArgs(Child, func_name, arg_types, return_type);
     } else if (type_info == .@"struct") {
-        if (!@hasDecl(T, func_name)) return error.FuncDoesNotExist;
+        if (!@hasDecl(T, func_name)) return .err(error.FuncDoesNotExist);
 
         const fn_type = @typeInfo(@TypeOf(@field(T, func_name)));
 
-        if (fn_type != .@"fn") return error.NotAFunction;
+        if (fn_type != .@"fn") return .err(error.NotAFunction);
 
         if (arg_types) |at| {
             // Check if first parameter is self (has type T, *T, or *const T)
@@ -1348,15 +1348,14 @@ pub fn verifyFuncWithArgs(comptime T: type, comptime func_name: []const u8, comp
             const start_idx = if (has_self_param) 1 else 0;
             const expected_len = at.len + start_idx;
 
-            if (fn_type.@"fn".params.len != expected_len) return error.IncorrectArgs;
+            if (fn_type.@"fn".params.len != expected_len) return .err(error.IncorrectArgs);
 
             inline for (0..at.len) |i| {
                 if (fn_type.@"fn".params[start_idx + i].type != at[i]) {
                     const expected = fn_type.@"fn".params[start_idx + i].type;
                     const actual = at[i];
                     const error_name = std.fmt.comptimePrint("IncorrectArgAt_{d}_Expected_{s}_Got_{s}", .{ i, getSimpleTypeName(expected.?), getSimpleTypeName(actual) });
-                    const DynamicError = util.DynamicError(error_name);
-                    return @field(DynamicError, error_name);
+                    return .fail(error_name);
                 }
             }
         }
@@ -1365,9 +1364,9 @@ pub fn verifyFuncWithArgs(comptime T: type, comptime func_name: []const u8, comp
             if (fn_type.@"fn".return_type != rt) return error.IncorrectArgs;
         }
 
-        return true;
+        return .success(true);
     }
-    return false;
+    return .success(false);
 }
 
 pub fn isField(comptime T: type, comptime field_name: []const u8) bool {
@@ -1583,22 +1582,22 @@ test "verifyFuncWithArgs" {
         }
     };
 
-    try std.testing.expect(comptime verifyFuncWithArgs(TestStruct, "getValue", &[_]type{}, null) catch false);
-    try std.testing.expect(!(comptime verifyFuncWithArgs(TestStruct, "getValue", &[_]type{i32}, null) catch false));
+    try std.testing.expect(comptime verifyFuncWithArgs(TestStruct, "getValue", &[_]type{}, null).isOk());
+    try std.testing.expect(!(comptime verifyFuncWithArgs(TestStruct, "getValue", &[_]type{i32}, null).isOk()));
 
-    try std.testing.expect(comptime verifyFuncWithArgs(TestStruct, "add", &[_]type{i32}, null) catch false);
-    try std.testing.expect(!(comptime verifyFuncWithArgs(TestStruct, "add", &[_]type{}, null) catch false));
-    try std.testing.expect(!(comptime verifyFuncWithArgs(TestStruct, "add", &[_]type{ i32, i32 }, null) catch false));
+    try std.testing.expect(comptime verifyFuncWithArgs(TestStruct, "add", &[_]type{i32}, null).isOk());
+    try std.testing.expect(!(comptime verifyFuncWithArgs(TestStruct, "add", &[_]type{}, null).isOk()));
+    try std.testing.expect(!(comptime verifyFuncWithArgs(TestStruct, "add", &[_]type{ i32, i32 }, null).isOk()));
 
-    try std.testing.expectError(error.FuncDoesNotExist, comptime verifyFuncWithArgs(TestStruct, "nonExistent", &[_]type{}, null));
+    try std.testing.expectEqual(@errorName(error.FuncDoesNotExist), comptime verifyFuncWithArgs(TestStruct, "nonExistent", &[_]type{}, null).Err);
 
     // Test dynamic error for type mismatch
     const mismatch_result = comptime verifyFuncWithArgs(TestStruct, "add", &[_]type{f32}, null);
-    if (mismatch_result) |_| {
-        try std.testing.expect(false); // should fail
-    } else |err| {
-        const name = @errorName(err);
-        try std.testing.expectEqualStrings("IncorrectArgAt_0_Expected_i32_Got_f32", name);
+    switch (mismatch_result) {
+        .Ok => try std.testing.expect(false), // should fail
+        .Err => |err| {
+            try std.testing.expectEqualStrings("IncorrectArgAt_0_Expected_i32_Got_f32", err);
+        },
     }
 }
 
