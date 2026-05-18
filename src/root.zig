@@ -55,6 +55,14 @@ pub const hasDeinit = @import("utils.zig").hasDeinit;
 
 pub const utils = @import("utils.zig");
 
+/// Get the base type by dereferencing pointers
+pub fn BaseType(comptime T: type) type {
+    return switch (@typeInfo(T)) {
+        .pointer => |pointer_info| BaseType(pointer_info.child),
+        else => T,
+    };
+}
+
 test {
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(change);
