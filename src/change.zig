@@ -81,6 +81,13 @@ pub fn Change(comptime T: type) type {
             };
         }
 
+        pub fn initChanged(data: T) Self {
+            return .{
+                ._data = data,
+                ._prior_hash = computeHash(data) + 1, // Force changed state
+            };
+        }
+
         /// Compute hash of all trackable fields (ignoring struct fields starting with `_`)
         fn computeHash(data: T) u64 {
             var hasher = std.hash.Wyhash.init(0);
