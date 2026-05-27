@@ -146,37 +146,111 @@ pub inline fn Template(comptime Tpl: type) type {
             return @Struct(.auto, null, &field_names, &field_types, &field_attrs);
         }
 
+        fn resolveTemplateTypeForImplementation(comptime T: type, comptime Implementation: type) type {
+            const t_info = reflect.getInfo(T).type;
+            const func_names = t_info.getFuncNames();
+            if (func_names.len == 0) return T;
+
+            var field_names: [func_names.len][:0]const u8 = undefined;
+            var field_types: [func_names.len]type = undefined;
+            var field_attrs: [func_names.len]std.builtin.Type.StructField.Attributes = undefined;
+            for (func_names, 0..) |name, i| {
+                const func_info = t_info.getFunc(name);
+                if (func_info) |func| {
+                    const PtrType = @TypeOf(func.toPtr());
+                    const p = @typeInfo(PtrType).pointer;
+                    const child = p.child;
+                    const substituted_child = substituteFunctionType(child, Tpl, Implementation);
+                    const new_child = eraseSelfParam(substituted_child);
+                    const NormalizedPtrType = @Pointer(p.size, .{
+                        .@"const" = p.is_const,
+                        .@"volatile" = p.is_volatile,
+                        .@"allowzero" = p.is_allowzero,
+                        .@"align" = p.alignment,
+                        .@"addrspace" = p.address_space,
+                    }, new_child, null);
+                    field_names[i] = name[0..name.len :0];
+                    field_types[i] = NormalizedPtrType;
+                    field_attrs[i] = .{
+                        .@"comptime" = false,
+                        .@"align" = @alignOf(NormalizedPtrType),
+                        .default_value_ptr = null,
+                    };
+                } else {
+                    @compileError("Template method info not found for '" ++ name ++ "'' in " ++ Name);
+                }
+            }
+
+            return @Struct(.auto, null, &field_names, &field_types, &field_attrs);
+        }
+
+        /// The generic vtable shape derived directly from the template.
+        ///
+        /// This preserves the template's method signatures after `self` erasure,
+        /// but does not specialize `TemplateDeclType(...)` placeholders to any
+        /// concrete implementation declarations.
+        ///
+        /// Use this when you need the template's unspecialized function-pointer
+        /// layout, such as when comparing raw template shapes or when no
+        /// declaration placeholders appear in method signatures.
         pub const TemplateType = resolveTemplateType(Tpl);
         pub const types: []const type = &[_]type{TemplateType};
 
-        const _Interface = blk: {
-            //const func_names = reflect.getTypeInfo(Tpl).getFuncNames();
-            //const field_count = func_names.len + 2;
+        /// Returns the implementation-specialized vtable type for `Implementation`.
+        ///
+        /// This starts from `TemplateType`, then substitutes any occurrences of
+        /// `TemplateDeclType("...")` in method parameters or return types with the
+        /// matching declaration from `Implementation`. For example, if a template
+        /// method accepts `?*const LoadSettings` and `LoadSettings` is declared as
+        /// `TemplateDeclType("LoadSettings")`, this resolves that parameter to
+        /// `?*const Implementation.LoadSettings`.
+        ///
+        /// Use this when the template's callable surface must exactly match a
+        /// concrete implementation's injected declaration types. `InterfaceFor`
+        /// and `vTableAsInterface` are built on top of this specialized type.
+        fn TemplateTypeFor(comptime Implementation: type) type {
+            validate(Implementation);
+            return resolveTemplateTypeForImplementation(Tpl, Implementation);
+        }
+
+        fn interfaceType(comptime PtrType: type, comptime InterfaceVTableType: type) type {
             var field_names: [2][:0]const u8 = .{ "ptr", "vtable" };
-            var field_types: [2]type = .{ *Tpl, TemplateType };
+            var field_types: [2]type = .{ PtrType, InterfaceVTableType };
             var field_attrs: [2]std.builtin.Type.StructField.Attributes = .{
-                .{ .@"comptime" = false, .@"align" = @alignOf(*Tpl), .default_value_ptr = null },
-                .{ .@"comptime" = false, .@"align" = @alignOf(TemplateType), .default_value_ptr = null },
+                .{ .@"comptime" = false, .@"align" = @alignOf(PtrType), .default_value_ptr = null },
+                .{ .@"comptime" = false, .@"align" = @alignOf(InterfaceVTableType), .default_value_ptr = null },
             };
 
-            // for (func_names, 0..) |func_name, i| {
-            //     const FieldType = @TypeOf(@field(@as(TemplateType, undefined), func_name));
-            //     fields[i + 2] = .{
-            //         .name = func_name[0..func_name.len :0],
-            //         .type = FieldType,
-            //         .default_value_ptr = null,
-            //         .is_comptime = false,
-            //         .alignment = @alignOf(FieldType),
-            //     };
-            // }
+            return @Struct(.auto, null, &field_names, &field_types, &field_attrs);
+        }
 
-            break :blk @Struct(.auto, null, &field_names, &field_types, &field_attrs);
-        };
+        const _Interface = interfaceType(*Tpl, TemplateType);
 
-        /// The interface type containing `ptr` and `vtable` fields.
+        /// The generic interface type containing `ptr` and `vtable` fields.
+        ///
+        /// This uses the unspecialized template pointer and `TemplateType`.
+        /// It is suitable for templates whose public callable surface does not
+        /// depend on injected declaration types.
         pub const Interface: type = _Interface;
 
-        /// Create a interface instance from a pointer to a concrete implementation.
+        /// Returns the implementation-specialized interface type for `Implementation`.
+        ///
+        /// This is the interface form you want when template methods mention
+        /// `TemplateDeclType("...")` placeholders. Its `ptr` field is typed as
+        /// `*Implementation`, and its `vtable` field is typed as
+        /// `TemplateTypeFor(Implementation)`, so callers see the concrete injected
+        /// declaration types instead of placeholder marker types.
+        ///
+        /// Example: if a template method uses `?*const ProcessSettings` where
+        /// `ProcessSettings` is a `TemplateDeclType("ProcessSettings")`, then
+        /// `InterfaceFor(MyProcessor).vtable.process` will accept
+        /// `?*const MyProcessor.ProcessSettings`.
+        pub fn InterfaceFor(comptime Implementation: type) type {
+            validate(Implementation);
+            return interfaceType(*Implementation, TemplateTypeFor(Implementation));
+        }
+
+        /// Create an implementation-specialized interface instance from a concrete pointer.
         ///
         /// Usage:
         /// ```zig
@@ -191,23 +265,20 @@ pub inline fn Template(comptime Tpl: type) type {
         ///         return value;  // did something
         ///     }
         /// };
-        /// const interface = DoSomething.interface(DoingSomething, .{});
-        /// interface.doSomething(42);
+        /// const iface = DoSomething.interfaceFromPtr(DoingSomething, &impl);
+        /// const result = iface.vtable.doSomething(iface.ptr, 42);
         /// ```
-        pub fn interfaceFromPtr(comptime Implementation: type, inst: *Implementation) blk: {
-            validate(Implementation);
-            break :blk Interface;
-        } {
-            return interfaceRaw(Implementation, @ptrCast(@alignCast(inst)));
+        pub fn interfaceFromPtr(comptime Implementation: type, inst: *Implementation) InterfaceFor(Implementation) {
+            return InterfaceRaw(Implementation, @ptrCast(@alignCast(inst)));
         }
 
-        pub fn interfaceRaw(Implementation: type, inst: *anyopaque) blk: {
-            validate(Implementation);
-            break :blk Interface;
-        } {
-            var _interface: _Interface = undefined;
+        /// Create an implementation-specialized interface instance from an erased pointer.
+        ///
+        /// Prefer `interfaceFromPtr` when you already have a typed pointer.
+        fn InterfaceRaw(comptime Implementation: type, inst: *anyopaque) InterfaceFor(Implementation) {
+            var _interface: InterfaceFor(Implementation) = undefined;
             _interface.ptr = @ptrCast(@alignCast(inst));
-            _interface.vtable = vTableAsTemplate(Implementation);
+            _interface.vtable = vTableAsInterface(Implementation);
 
             //populateMethods(&_interface);
 
@@ -216,26 +287,44 @@ pub inline fn Template(comptime Tpl: type) type {
 
         /// Populates an existing interface instance from a concrete implementation.
         ///
+        /// `iface` may be either `*Interface` or `*InterfaceFor(Implementation)`.
+        /// The specialized form is required when the template exposes injected
+        /// declaration types on its callable surface.
+        ///
         /// Usage:
         /// ```zig
         /// Template(...).populate(&interface_instance, &impl_instance);
         /// ```
-        pub fn populate(iface: *Interface, inst: anytype) void {
+        pub fn populate(iface: anytype, inst: anytype) void {
+            const IfacePtrType = @TypeOf(iface);
+            if (@typeInfo(IfacePtrType) != .pointer) {
+                @compileError("populate requires a pointer to the interface, got " ++ reflect.getSimpleTypeName(IfacePtrType));
+            }
+
+            const IfaceType = @typeInfo(IfacePtrType).pointer.child;
+            const InstType = @TypeOf(inst);
+            if (@typeInfo(InstType) != .pointer) {
+                @compileError("populate requires a pointer to the implementation (e.g. &inst), got value of type " ++ reflect.getSimpleTypeName(InstType));
+            }
+
+            const Implementation = @typeInfo(InstType).pointer.child;
             iface.ptr = @ptrCast(@alignCast(inst));
             iface.vtable = comptime blk: {
-                const InstType = @TypeOf(inst);
-                if (@typeInfo(InstType) != .pointer) {
-                    @compileError("populate requires a pointer to the implementation (e.g. &inst), got value of type " ++ reflect.getSimpleTypeName(InstType));
+                if (IfaceType == Interface) {
+                    break :blk vTableAsTemplate(Implementation);
                 }
-                const Implementation = @typeInfo(InstType).pointer.child;
-                break :blk vTableAsTemplate(Implementation);
+                if (IfaceType == InterfaceFor(Implementation)) {
+                    break :blk vTableAsInterface(Implementation);
+                }
+
+                @compileError("populate requires *Interface or *InterfaceFor(Implementation), got " ++ reflect.getSimpleTypeName(IfaceType));
             };
         }
 
         /// Populate an interface instance from a value type by allocating it on the heap.
         ///
         /// *Caller is responsible for freeing the allocated implementation instance.*
-        pub fn populateFromValue(iface: *Interface, allocator: std.mem.Allocator, inst: anytype) !blk: {
+        pub fn populateFromValue(iface: anytype, allocator: std.mem.Allocator, inst: anytype) !blk: {
             const InstType = @TypeOf(inst);
             break :blk *InstType;
         } {
@@ -246,11 +335,7 @@ pub inline fn Template(comptime Tpl: type) type {
 
             const impl_ptr = try allocator.create(InstType);
             impl_ptr.* = inst;
-            iface.ptr = @ptrCast(@alignCast(impl_ptr));
-            iface.vtable = comptime blk: {
-                const Implementation = InstType;
-                break :blk vTableAsTemplate(Implementation);
-            };
+            populate(iface, impl_ptr);
 
             return impl_ptr;
         }
@@ -918,17 +1003,23 @@ pub inline fn Template(comptime Tpl: type) type {
         /// vtable type, assuming compatible function pointer layouts.
         pub fn vTableAsTemplate(comptime Implementation: type) TemplateType {
             const vt = vTable(Implementation);
-            return castVTableToTemplate(Implementation, vt);
+            return castVTableToType(Implementation, TemplateType, vt);
         }
 
-        /// Cast an implementation vtable to the template's exact vtable struct type.
-        fn castVTableToTemplate(comptime Implementation: type, vtable: VTableType(Implementation)) TemplateType {
-            const tmpl_ti = reflect.TypeInfo.from(TemplateType);
+        /// Build a vtable that matches the implementation-specialized template type.
+        fn vTableAsInterface(comptime Implementation: type) TemplateTypeFor(Implementation) {
+            const vt = vTable(Implementation);
+            return castVTableToType(Implementation, TemplateTypeFor(Implementation), vt);
+        }
+
+        /// Cast an implementation vtable to the requested template-compatible vtable struct type.
+        fn castVTableToType(comptime Implementation: type, comptime DestinationType: type, vtable: VTableType(Implementation)) DestinationType {
+            const tmpl_ti = reflect.TypeInfo.from(DestinationType);
             comptime if (tmpl_ti.category != .Struct) {
-                @compileError("castVTableToTemplate requires a struct Template type");
+                @compileError("castVTableToType requires a struct template type");
             };
 
-            var out: TemplateType = undefined;
+            var out: DestinationType = undefined;
             inline for (tmpl_ti.fields) |field| {
                 const FieldType = field.type.type;
                 const src_field = @field(vtable, field.name);
@@ -1189,6 +1280,41 @@ test "Interface injects declaration placeholder types into method signatures" {
     var impl = Impl{};
     const settings = Impl.LoadSettings{ .enabled = true };
     vt.build(&impl, &settings);
+
+    try std.testing.expect(impl.enabled);
+}
+
+test "InterfaceFor injects declaration placeholder types into interface signatures" {
+    const LoaderLike = struct {
+        pub const LoadSettings = TemplateDeclType("LoadSettings");
+
+        pub fn build(_: *@This(), settings: ?*const LoadSettings) void {
+            _ = settings;
+            unreachable;
+        }
+    };
+
+    const Impl = struct {
+        enabled: bool = false,
+
+        pub const LoadSettings = struct {
+            enabled: bool = true,
+        };
+
+        pub fn build(self: *@This(), settings: ?*const LoadSettings) void {
+            if (settings) |s| {
+                self.enabled = s.enabled;
+            }
+        }
+    };
+
+    const LoaderLikeTemplate = Template(LoaderLike);
+    var impl = Impl{};
+    var iface: LoaderLikeTemplate.InterfaceFor(Impl) = undefined;
+    LoaderLikeTemplate.populate(&iface, &impl);
+
+    const settings = Impl.LoadSettings{ .enabled = true };
+    iface.vtable.build(iface.ptr, &settings);
 
     try std.testing.expect(impl.enabled);
 }
