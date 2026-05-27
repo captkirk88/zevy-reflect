@@ -438,6 +438,55 @@ pub inline fn Template(comptime Tpl: type) type {
             return impl_info.toStringEx(simple_names);
         }
 
+        fn declarationList(comptime T: type) []const std.builtin.Type.Declaration {
+            return switch (@typeInfo(T)) {
+                .@"struct" => |info| info.decls,
+                .@"enum" => |info| info.decls,
+                .@"union" => |info| info.decls,
+                else => &.{},
+            };
+        }
+
+        fn isRequiredValueDecl(comptime Container: type, comptime decl_name: []const u8) bool {
+            if (std.mem.eql(u8, decl_name, "Name")) return false;
+
+            const DeclType = @TypeOf(@field(Container, decl_name));
+            if (DeclType == type) return false;
+
+            return @typeInfo(DeclType) != .@"fn";
+        }
+
+        fn requiredValueDeclNames(comptime Container: type) []const []const u8 {
+            const decls = declarationList(Container);
+            if (decls.len == 0) return &.{};
+
+            var names: [decls.len][]const u8 = undefined;
+            var count: usize = 0;
+            inline for (decls) |decl| {
+                if (!isRequiredValueDecl(Container, decl.name)) continue;
+                names[count] = decl.name;
+                count += 1;
+            }
+
+            return names[0..count];
+        }
+
+        fn declarationSignature(comptime Container: type, comptime decl_name: []const u8, comptime simple_names: bool) []const u8 {
+            const DeclType = @TypeOf(@field(Container, decl_name));
+            return std.fmt.comptimePrint("{s}: {s}", .{ decl_name, typeNameForMismatch(DeclType, simple_names) });
+        }
+
+        fn incompatibleDeclarationMessage(comptime TemplateContainer: type, comptime Implementation: type, comptime decl_name: []const u8, comptime simple_names: bool) []const u8 {
+            const expected_type = @TypeOf(@field(TemplateContainer, decl_name));
+            const actual_type = @TypeOf(@field(Implementation, decl_name));
+
+            return std.fmt.comptimePrint("{s}: expected {s}, found {s}", .{
+                decl_name,
+                typeNameForMismatch(expected_type, simple_names),
+                typeNameForMismatch(actual_type, simple_names),
+            });
+        }
+
         fn validateThis(implementationType: type, comptime verbose: bool, comptime validation_site: ?std.builtin.SourceLocation) void {
             const Implementation = implementationType;
 
@@ -446,9 +495,26 @@ pub inline fn Template(comptime Tpl: type) type {
                 const impl_info = reflect.TypeInfo.from(Implementation);
                 const func_names = t_info.getFuncNames();
                 const tmpl_struct_fields = t_info.fields;
+                const required_decl_names = requiredValueDeclNames(Tpl);
 
+                var missing_declarations: []const []const u8 = &.{};
+                var incompatible_declarations: []const []const u8 = &.{};
                 var missing_methods: []const []const u8 = &.{};
                 var incompatible_methods: []const []const u8 = &.{};
+
+                for (required_decl_names) |decl_name| {
+                    const expected_decl = declarationSignature(Tpl, decl_name, !verbose);
+                    if (!@hasDecl(Implementation, decl_name)) {
+                        missing_declarations = missing_declarations ++ &[_][]const u8{expected_decl};
+                        continue;
+                    }
+
+                    const expected_type = @TypeOf(@field(Tpl, decl_name));
+                    const actual_type = @TypeOf(@field(Implementation, decl_name));
+                    if (expected_type != actual_type) {
+                        incompatible_declarations = incompatible_declarations ++ &[_][]const u8{incompatibleDeclarationMessage(Tpl, Implementation, decl_name, !verbose)};
+                    }
+                }
 
                 // Handle template vtables defined as fields (e.g. function pointer structs)
                 if (func_names.len == 0) {
@@ -548,13 +614,27 @@ pub inline fn Template(comptime Tpl: type) type {
                     }
                 }
 
-                if (missing_methods.len > 0 or incompatible_methods.len > 0) {
+                if (missing_declarations.len > 0 or incompatible_declarations.len > 0 or missing_methods.len > 0 or incompatible_methods.len > 0) {
                     const implementation_name = implementationDisplayName(Implementation, impl_info, !verbose);
                     var error_msg: []const u8 = "Implementation '" ++ implementation_name ++ "' ";
                     error_msg = error_msg ++ "does not satisfy interface '" ++ Name ++ "'.\n";
 
                     if (validation_site) |site| {
                         error_msg = error_msg ++ "Validation site: " ++ formatSourceLocation(site) ++ "\n";
+                    }
+
+                    if (missing_declarations.len > 0) {
+                        error_msg = error_msg ++ "Missing declarations:\n";
+                        for (missing_declarations) |decl| {
+                            error_msg = error_msg ++ "  - " ++ decl ++ "\n";
+                        }
+                    }
+
+                    if (incompatible_declarations.len > 0) {
+                        error_msg = error_msg ++ "Incompatible declarations:\n";
+                        for (incompatible_declarations) |decl| {
+                            error_msg = error_msg ++ "  - " ++ decl ++ "\n";
+                        }
                     }
 
                     if (missing_methods.len > 0) {
@@ -938,6 +1018,34 @@ test "Interface prefers implementation Name for diagnostics" {
         "RenderPlugin",
         comptime PluginTemplate.implementationDisplayName(Impl, impl_info, true),
     );
+}
+
+test "Interface validates required pub const and pub var declarations" {
+    const PluginLike = struct {
+        pub const kind: []const u8 = "plugin";
+        pub var api_version: u32 = 1;
+
+        pub fn build(_: *@This()) void {
+            unreachable;
+        }
+    };
+
+    const Impl = struct {
+        pub const kind: []const u8 = "impl";
+        pub var api_version: u32 = 2;
+
+        pub fn build(_: *@This()) void {}
+    };
+
+    const PluginLikeTemplate = Template(PluginLike);
+    PluginLikeTemplate.validate(Impl);
+
+    const vt = PluginLikeTemplate.vTable(Impl);
+    var impl = Impl{};
+    vt.build(&impl);
+
+    try std.testing.expectEqualStrings("plugin", PluginLike.kind);
+    try std.testing.expectEqual(@as(u32, 2), Impl.api_version);
 }
 
 test "Formats validation site for diagnostics" {

@@ -101,6 +101,8 @@ See [MIXIN_CODEGEN.md](MIXIN_CODEGEN.md) for the mixin-specific API.
 
 If you want validation errors to include the user callsite that triggered validation, use `Template(...).validateAt(Impl, @src())` or `validateVerboseAt(Impl, @src())`.
 
+Templates may also declare required `pub const` and `pub var` members. Non-type declarations on the template, other than `Name`, must also exist on the implementation or validation fails at compile time.
+
 ```zig
 
 This is a different approach to interfaces in Zig.  Hopefully more useful and generally easier to integrate.
