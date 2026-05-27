@@ -447,23 +447,21 @@ pub inline fn Template(comptime Tpl: type) type {
             };
         }
 
-        fn isRequiredValueDecl(comptime Container: type, comptime decl_name: []const u8) bool {
+        fn isRequiredDecl(comptime Container: type, comptime decl_name: []const u8) bool {
             if (std.mem.eql(u8, decl_name, "Name")) return false;
 
             const DeclType = @TypeOf(@field(Container, decl_name));
-            if (DeclType == type) return false;
-
             return @typeInfo(DeclType) != .@"fn";
         }
 
-        fn requiredValueDeclNames(comptime Container: type) []const []const u8 {
+        fn requiredDeclNames(comptime Container: type) []const []const u8 {
             const decls = declarationList(Container);
             if (decls.len == 0) return &.{};
 
             var names: [decls.len][]const u8 = undefined;
             var count: usize = 0;
             inline for (decls) |decl| {
-                if (!isRequiredValueDecl(Container, decl.name)) continue;
+                if (!isRequiredDecl(Container, decl.name)) continue;
                 names[count] = decl.name;
                 count += 1;
             }
@@ -495,7 +493,7 @@ pub inline fn Template(comptime Tpl: type) type {
                 const impl_info = reflect.TypeInfo.from(Implementation);
                 const func_names = t_info.getFuncNames();
                 const tmpl_struct_fields = t_info.fields;
-                const required_decl_names = requiredValueDeclNames(Tpl);
+                const required_decl_names = requiredDeclNames(Tpl);
 
                 var missing_declarations: []const []const u8 = &.{};
                 var incompatible_declarations: []const []const u8 = &.{};
@@ -1046,6 +1044,27 @@ test "Interface validates required pub const and pub var declarations" {
 
     try std.testing.expectEqualStrings("plugin", PluginLike.kind);
     try std.testing.expectEqual(@as(u32, 2), Impl.api_version);
+}
+
+test "Interface validates required type declarations" {
+    const LoaderLike = struct {
+        pub const LoadSettings = type;
+
+        pub fn build(_: *@This()) void {
+            unreachable;
+        }
+    };
+
+    const Impl = struct {
+        pub const LoadSettings = struct {
+            enabled: bool = true,
+        };
+
+        pub fn build(_: *@This()) void {}
+    };
+
+    const LoaderLikeTemplate = Template(LoaderLike);
+    LoaderLikeTemplate.validate(Impl);
 }
 
 test "Formats validation site for diagnostics" {
