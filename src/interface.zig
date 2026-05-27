@@ -1,6 +1,43 @@
 const std = @import("std");
 const reflect = @import("reflect.zig");
 
+/// Marker type used by `Template` to inject a named implementation declaration
+/// into method signatures during validation and vtable generation.
+pub fn TemplateDeclType(comptime decl_name: []const u8) type {
+    return struct {
+        pub const __zevy_reflect_template_decl_placeholder = true;
+        pub const __zevy_reflect_template_decl_name = decl_name;
+    };
+}
+
+fn templateDeclPlaceholderName(comptime T: type) ?[]const u8 {
+    switch (@typeInfo(T)) {
+        .@"struct", .@"enum", .@"union", .@"opaque" => {},
+        else => return null,
+    }
+
+    if (!@hasDecl(T, "__zevy_reflect_template_decl_placeholder") or !@hasDecl(T, "__zevy_reflect_template_decl_name")) {
+        return null;
+    }
+
+    if (@TypeOf(@field(T, "__zevy_reflect_template_decl_placeholder")) != bool or !@field(T, "__zevy_reflect_template_decl_placeholder")) {
+        return null;
+    }
+
+    const DeclName = @field(T, "__zevy_reflect_template_decl_name");
+    if (@TypeOf(DeclName) != []const u8) return null;
+    return DeclName;
+}
+
+fn resolveTemplateDeclType(comptime Implementation: type, comptime decl_name: []const u8) type {
+    if (!@hasDecl(Implementation, decl_name)) return TemplateDeclType(decl_name);
+
+    const decl_value = @field(Implementation, decl_name);
+    if (@TypeOf(decl_value) != type) return TemplateDeclType(decl_name);
+
+    return decl_value;
+}
+
 /// Creates an interface validator from a template type.
 /// Returns a type that can validate and constrain implementations.
 ///
@@ -455,7 +492,7 @@ pub inline fn Template(comptime Tpl: type) type {
         }
 
         fn requiredDeclNames(comptime Container: type) []const []const u8 {
-            const decls = declarationList(Container);
+            const decls = comptime declarationList(Container);
             if (decls.len == 0) return &.{};
 
             var names: [decls.len][]const u8 = undefined;
@@ -470,19 +507,103 @@ pub inline fn Template(comptime Tpl: type) type {
         }
 
         fn declarationSignature(comptime Container: type, comptime decl_name: []const u8, comptime simple_names: bool) []const u8 {
-            const DeclType = @TypeOf(@field(Container, decl_name));
+            const DeclValue = @field(Container, decl_name);
+            if (@TypeOf(DeclValue) == type) {
+                if (templateDeclPlaceholderName(DeclValue)) |_| {
+                    return decl_name ++ ": type";
+                }
+            }
+
+            const DeclType = @TypeOf(DeclValue);
             return std.fmt.comptimePrint("{s}: {s}", .{ decl_name, typeNameForMismatch(DeclType, simple_names) });
         }
 
+        fn declarationsCompatible(comptime TemplateContainer: type, comptime Implementation: type, comptime decl_name: []const u8) bool {
+            const expected_decl = @field(TemplateContainer, decl_name);
+            const actual_decl = @field(Implementation, decl_name);
+
+            if (@TypeOf(expected_decl) == type) {
+                if (templateDeclPlaceholderName(expected_decl)) |_| {
+                    return @TypeOf(actual_decl) == type;
+                }
+
+                if (expected_decl == type) {
+                    return @TypeOf(actual_decl) == type;
+                }
+
+                return @TypeOf(actual_decl) == type and expected_decl == actual_decl;
+            }
+
+            return @TypeOf(expected_decl) == @TypeOf(actual_decl);
+        }
+
         fn incompatibleDeclarationMessage(comptime TemplateContainer: type, comptime Implementation: type, comptime decl_name: []const u8, comptime simple_names: bool) []const u8 {
-            const expected_type = @TypeOf(@field(TemplateContainer, decl_name));
+            const expected_decl = @field(TemplateContainer, decl_name);
             const actual_type = @TypeOf(@field(Implementation, decl_name));
+
+            if (@TypeOf(expected_decl) == type) {
+                if (templateDeclPlaceholderName(expected_decl)) |_| {
+                    return std.fmt.comptimePrint("{s}: expected type declaration, found {s}", .{
+                        decl_name,
+                        typeNameForMismatch(actual_type, simple_names),
+                    });
+                }
+
+                if (expected_decl == type) {
+                    return std.fmt.comptimePrint("{s}: expected type declaration, found {s}", .{
+                        decl_name,
+                        typeNameForMismatch(actual_type, simple_names),
+                    });
+                }
+            }
+
+            const expected_type = @TypeOf(expected_decl);
 
             return std.fmt.comptimePrint("{s}: expected {s}, found {s}", .{
                 decl_name,
                 typeNameForMismatch(expected_type, simple_names),
                 typeNameForMismatch(actual_type, simple_names),
             });
+        }
+
+        fn compileValidationError(comptime Implementation: type, comptime impl_info: reflect.TypeInfo, comptime verbose: bool, comptime validation_site: ?std.builtin.SourceLocation, comptime missing_declarations: []const []const u8, comptime incompatible_declarations: []const []const u8, comptime missing_methods: []const []const u8, comptime incompatible_methods: []const []const u8) void {
+            const implementation_name = implementationDisplayName(Implementation, impl_info, !verbose);
+            var error_msg: []const u8 = "Implementation '" ++ implementation_name ++ "' ";
+            error_msg = error_msg ++ "does not satisfy interface '" ++ Name ++ "'.\n";
+
+            if (validation_site) |site| {
+                error_msg = error_msg ++ "Validation site: " ++ formatSourceLocation(site) ++ "\n";
+            }
+
+            if (missing_declarations.len > 0) {
+                error_msg = error_msg ++ "Missing declarations:\n";
+                for (missing_declarations) |decl| {
+                    error_msg = error_msg ++ "  - " ++ decl ++ "\n";
+                }
+            }
+
+            if (incompatible_declarations.len > 0) {
+                error_msg = error_msg ++ "Incompatible declarations:\n";
+                for (incompatible_declarations) |decl| {
+                    error_msg = error_msg ++ "  - " ++ decl ++ "\n";
+                }
+            }
+
+            if (missing_methods.len > 0) {
+                error_msg = error_msg ++ "Missing methods:\n";
+                for (missing_methods) |method| {
+                    error_msg = error_msg ++ "  - " ++ method ++ "\n";
+                }
+            }
+
+            if (incompatible_methods.len > 0) {
+                error_msg = error_msg ++ "Incompatible methods:\n";
+                for (incompatible_methods) |method| {
+                    error_msg = error_msg ++ "  - " ++ method ++ "\n";
+                }
+            }
+
+            @compileError(error_msg);
         }
 
         fn validateThis(implementationType: type, comptime verbose: bool, comptime validation_site: ?std.builtin.SourceLocation) void {
@@ -496,22 +617,20 @@ pub inline fn Template(comptime Tpl: type) type {
                 const required_decl_names = requiredDeclNames(Tpl);
 
                 var missing_declarations: []const []const u8 = &.{};
-                var incompatible_declarations: []const []const u8 = &.{};
+                const incompatible_declarations: []const []const u8 = &.{};
                 var missing_methods: []const []const u8 = &.{};
                 var incompatible_methods: []const []const u8 = &.{};
 
-                for (required_decl_names) |decl_name| {
-                    const expected_decl = declarationSignature(Tpl, decl_name, !verbose);
+                var decl_index: usize = 0;
+                while (decl_index < required_decl_names.len) : (decl_index += 1) {
+                    const decl_name = required_decl_names[decl_index];
                     if (!@hasDecl(Implementation, decl_name)) {
-                        missing_declarations = missing_declarations ++ &[_][]const u8{expected_decl};
-                        continue;
+                        missing_declarations = missing_declarations ++ &[_][]const u8{decl_name};
                     }
+                }
 
-                    const expected_type = @TypeOf(@field(Tpl, decl_name));
-                    const actual_type = @TypeOf(@field(Implementation, decl_name));
-                    if (expected_type != actual_type) {
-                        incompatible_declarations = incompatible_declarations ++ &[_][]const u8{incompatibleDeclarationMessage(Tpl, Implementation, decl_name, !verbose)};
-                    }
+                if (missing_declarations.len > 0 or incompatible_declarations.len > 0) {
+                    compileValidationError(Implementation, impl_info, verbose, validation_site, missing_declarations, incompatible_declarations, &.{}, &.{});
                 }
 
                 // Handle template vtables defined as fields (e.g. function pointer structs)
@@ -612,43 +731,8 @@ pub inline fn Template(comptime Tpl: type) type {
                     }
                 }
 
-                if (missing_declarations.len > 0 or incompatible_declarations.len > 0 or missing_methods.len > 0 or incompatible_methods.len > 0) {
-                    const implementation_name = implementationDisplayName(Implementation, impl_info, !verbose);
-                    var error_msg: []const u8 = "Implementation '" ++ implementation_name ++ "' ";
-                    error_msg = error_msg ++ "does not satisfy interface '" ++ Name ++ "'.\n";
-
-                    if (validation_site) |site| {
-                        error_msg = error_msg ++ "Validation site: " ++ formatSourceLocation(site) ++ "\n";
-                    }
-
-                    if (missing_declarations.len > 0) {
-                        error_msg = error_msg ++ "Missing declarations:\n";
-                        for (missing_declarations) |decl| {
-                            error_msg = error_msg ++ "  - " ++ decl ++ "\n";
-                        }
-                    }
-
-                    if (incompatible_declarations.len > 0) {
-                        error_msg = error_msg ++ "Incompatible declarations:\n";
-                        for (incompatible_declarations) |decl| {
-                            error_msg = error_msg ++ "  - " ++ decl ++ "\n";
-                        }
-                    }
-
-                    if (missing_methods.len > 0) {
-                        error_msg = error_msg ++ "Missing methods:\n";
-                        for (missing_methods) |method| {
-                            error_msg = error_msg ++ "  - " ++ method ++ "\n";
-                        }
-                    }
-
-                    if (incompatible_methods.len > 0) {
-                        error_msg = error_msg ++ "Incompatible methods:\n";
-                        for (incompatible_methods) |method| {
-                            error_msg = error_msg ++ "  - " ++ method ++ "\n";
-                        }
-                    }
-                    @compileError(error_msg);
+                if (missing_methods.len > 0 or incompatible_methods.len > 0) {
+                    compileValidationError(Implementation, impl_info, verbose, validation_site, &.{}, &.{}, missing_methods, incompatible_methods);
                 }
             }
         }
@@ -700,7 +784,14 @@ pub inline fn Template(comptime Tpl: type) type {
 
         fn substituteTypeInType(comptime T: type, comptime template_type: type, comptime impl_type: type) type {
             if (T == template_type) return impl_type;
+            if (templateDeclPlaceholderName(T)) |decl_name| {
+                return resolveTemplateDeclType(impl_type, decl_name);
+            }
             const ti = @typeInfo(T);
+            if (ti == .optional) {
+                const opt = ti.optional;
+                return ?substituteTypeInType(opt.child, template_type, impl_type);
+            }
             if (ti == .pointer) {
                 const p = ti.pointer;
                 const child = p.child;
@@ -1065,6 +1156,41 @@ test "Interface validates required type declarations" {
 
     const LoaderLikeTemplate = Template(LoaderLike);
     LoaderLikeTemplate.validate(Impl);
+}
+
+test "Interface injects declaration placeholder types into method signatures" {
+    const LoaderLike = struct {
+        pub const LoadSettings = TemplateDeclType("LoadSettings");
+
+        pub fn build(_: *@This(), settings: ?*const LoadSettings) void {
+            _ = settings;
+            unreachable;
+        }
+    };
+
+    const Impl = struct {
+        enabled: bool = false,
+
+        pub const LoadSettings = struct {
+            enabled: bool = true,
+        };
+
+        pub fn build(self: *@This(), settings: ?*const LoadSettings) void {
+            if (settings) |s| {
+                self.enabled = s.enabled;
+            }
+        }
+    };
+
+    const LoaderLikeTemplate = Template(LoaderLike);
+    LoaderLikeTemplate.validate(Impl);
+
+    const vt = LoaderLikeTemplate.vTable(Impl);
+    var impl = Impl{};
+    const settings = Impl.LoadSettings{ .enabled = true };
+    vt.build(&impl, &settings);
+
+    try std.testing.expect(impl.enabled);
 }
 
 test "Formats validation site for diagnostics" {

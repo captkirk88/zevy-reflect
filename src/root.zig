@@ -13,6 +13,7 @@ pub const codegen = struct {
 };
 
 pub const Template = interf.Template;
+pub const TemplateDeclType = interf.TemplateDeclType;
 pub const Templates = interf.Templates;
 
 pub const templates = struct {
