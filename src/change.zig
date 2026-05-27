@@ -106,6 +106,16 @@ pub fn Change(comptime T: type) type {
             return &self._data;
         }
 
+        pub fn tryGet(self: *Self) ?*T {
+            if (self.isChanged()) return null;
+            return &self._data;
+        }
+
+        pub fn tryGetConst(self: *const Self) ?*const T {
+            if (self.isChanged()) return null;
+            return &self._data;
+        }
+
         /// Return a copy of the current value.
         pub fn value(self: *const Self) T {
             return self._data;
