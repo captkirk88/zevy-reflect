@@ -5,6 +5,7 @@ const std = @import("std");
 const reflect = @import("reflect.zig");
 const change = @import("change.zig");
 const interf = @import("interface.zig");
+const vtable_mod = @import("vtable.zig");
 
 // Code generation utilities
 pub const codegen = struct {
@@ -15,6 +16,9 @@ pub const codegen = struct {
 pub const Template = interf.Template;
 pub const TemplateDeclType = interf.TemplateDeclType;
 pub const Templates = interf.Templates;
+
+pub const DynamicVTable = vtable_mod.DynamicVTable;
+pub const FnEntry = vtable_mod.FnEntry;
 
 pub const templates = struct {
     const _common = @import("common_interfaces.zig");
@@ -68,6 +72,7 @@ test {
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(change);
     std.testing.refAllDecls(interf);
+    std.testing.refAllDecls(vtable_mod);
     std.testing.refAllDecls(codegen.generator);
     std.testing.refAllDecls(codegen.mixin_generator);
 }

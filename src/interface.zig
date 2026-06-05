@@ -1,5 +1,6 @@
 const std = @import("std");
 const reflect = @import("reflect.zig");
+const dynamic_vtable = @import("vtable.zig");
 
 /// Marker type used by `Template` to inject a named implementation declaration
 /// into method signatures during validation and vtable generation.
@@ -998,36 +999,57 @@ pub inline fn Template(comptime Tpl: type) type {
 
         /// Build a vtable that matches the original template's type (useful for externally
         /// defined vtable structs such as std.mem.Allocator.VTable).
-        ///
-        /// This casts the generated implementation vtable field-by-field into the template
-        /// vtable type, assuming compatible function pointer layouts.
         pub fn vTableAsTemplate(comptime Implementation: type) TemplateType {
-            const vt = vTable(Implementation);
-            return castVTableToType(Implementation, TemplateType, vt);
+            validate(Implementation);
+            const Dynamic = dynamicVTableFor(TemplateType);
+            const dynamic_table = Dynamic.create(Implementation).vtable;
+            return castErasedVTableToType(TemplateType, dynamic_table);
         }
 
         /// Build a vtable that matches the implementation-specialized template type.
         fn vTableAsInterface(comptime Implementation: type) TemplateTypeFor(Implementation) {
-            const vt = vTable(Implementation);
-            return castVTableToType(Implementation, TemplateTypeFor(Implementation), vt);
+            validate(Implementation);
+            const InterfaceTemplateType = TemplateTypeFor(Implementation);
+            const Dynamic = dynamicVTableFor(InterfaceTemplateType);
+            const dynamic_table = Dynamic.create(Implementation).vtable;
+            return castErasedVTableToType(InterfaceTemplateType, dynamic_table);
         }
 
-        /// Cast an implementation vtable to the requested template-compatible vtable struct type.
-        fn castVTableToType(comptime Implementation: type, comptime DestinationType: type, vtable: VTableType(Implementation)) DestinationType {
-            const tmpl_ti = reflect.TypeInfo.from(DestinationType);
-            comptime if (tmpl_ti.category != .Struct) {
-                @compileError("castVTableToType requires a struct template type");
+        fn castErasedVTableToType(comptime DestinationType: type, source: anytype) DestinationType {
+            const ti = reflect.TypeInfo.from(DestinationType);
+            comptime if (ti.category != .Struct) {
+                @compileError("castErasedVTableToType requires a struct destination type");
             };
 
             var out: DestinationType = undefined;
-            inline for (tmpl_ti.fields) |field| {
+            inline for (ti.fields) |field| {
                 const FieldType = field.type.type;
-                const src_field = @field(vtable, field.name);
-                const casted: FieldType = @ptrCast(src_field);
-                @field(out, field.name) = casted;
+                const src_field = @field(source, field.name);
+                @field(out, field.name) = @as(FieldType, @ptrCast(src_field));
             }
-
             return out;
+        }
+
+        fn dynamicVTableFor(comptime DestinationType: type) type {
+            const ti = reflect.TypeInfo.from(DestinationType);
+            comptime if (ti.category != .Struct) {
+                @compileError("dynamicVTableFor requires a struct destination type");
+            };
+
+            const entry_array = comptime blk: {
+                var out: [ti.fields.len]dynamic_vtable.FnEntry = undefined;
+                for (ti.fields, 0..) |field, i| {
+                    const field_type = field.type.type;
+                    const field_ti = @typeInfo(field_type);
+                    if (field_ti != .pointer or @typeInfo(field_ti.pointer.child) != .@"fn") {
+                        @compileError("dynamicVTableFor expected function pointer field, got '" ++ @typeName(field_type) ++ "' for '" ++ field.name ++ "'");
+                    }
+                    out[i] = .{ .name = field.name[0..field.name.len :0], .Fn = field_ti.pointer.child };
+                }
+                break :blk out;
+            };
+
+            return dynamic_vtable.DynamicVTable(&entry_array);
         }
     };
 }
