@@ -48,6 +48,21 @@ fn buildStorageType(comptime entries: []const FnEntry) type {
     return @Struct(.auto, null, &names, &types, &attrs);
 }
 
+fn mergeEntries(comptime base: []const FnEntry, comptime extra: []const FnEntry) []const FnEntry {
+    comptime {
+        var merged: []const FnEntry = base;
+        for (extra) |entry| {
+            for (merged) |existing| {
+                if (std.mem.eql(u8, existing.name, entry.name)) {
+                    @compileError("DynamicVTable.Extend: duplicate entry name '" ++ entry.name ++ "'");
+                }
+            }
+            merged = merged ++ &[_]FnEntry{entry};
+        }
+        return merged;
+    }
+}
+
 // ── public API ─────────────────────────────────────────────────────────────
 
 /// A compile-time vtable keyed by function name, supporting subset projection
@@ -138,6 +153,14 @@ pub fn DynamicVTable(comptime entries: []const FnEntry) type {
             return self;
         }
 
+        /// Create a new vtable type by appending additional entries.
+        ///
+        /// This enables additive interface evolution while preserving older
+        /// subset interfaces. Existing entry names may not be redefined.
+        pub fn Extend(comptime extra_entries: []const FnEntry) type {
+            return DynamicVTable(mergeEntries(entries, extra_entries));
+        }
+
         // ── lookup ────────────────────────────────────────────────────────
 
         /// Return the typed function pointer for `name`.
@@ -191,12 +214,14 @@ pub fn DynamicVTable(comptime entries: []const FnEntry) type {
         // ── subset / projection ───────────────────────────────────────────
 
         /// Returns `true` at compile time if every entry in `OtherVTable`
-        /// is also declared in this vtable (name-based check).
+        /// is also declared in this vtable with the same function type.
         pub fn containsAll(comptime OtherVTable: type) bool {
             inline for (OtherVTable.fn_entries) |needed| {
                 const found = comptime inner: {
                     for (entries) |have| {
-                        if (std.mem.eql(u8, have.name, needed.name)) break :inner true;
+                        if (std.mem.eql(u8, have.name, needed.name)) {
+                            break :inner have.Fn == needed.Fn;
+                        }
                     }
                     break :inner false;
                 };
@@ -402,6 +427,53 @@ test "DynamicVTable - containsAll" {
 
     try std.testing.expect(FullVT.containsAll(DrawVT));
     try std.testing.expect(!FullVT.containsAll(ExtraVT));
+}
+
+test "DynamicVTable - containsAll requires matching Fn type" {
+    const VT1 = DynamicVTable(&.{
+        .{ .name = "draw", .Fn = fn (*anyopaque) void },
+    });
+
+    const VT2 = DynamicVTable(&.{
+        .{ .name = "draw", .Fn = fn (*anyopaque, f32) void },
+    });
+
+    try std.testing.expect(!VT1.containsAll(VT2));
+}
+
+test "DynamicVTable - Extend preserves legacy subset interfaces" {
+    const BaseVT = DynamicVTable(&.{
+        .{ .name = "draw", .Fn = fn (*anyopaque) void },
+        .{ .name = "update", .Fn = fn (*anyopaque, f32) void },
+    });
+
+    const ExtendedVT = BaseVT.Extend(&.{
+        .{ .name = "destroy", .Fn = fn (*anyopaque) void },
+    });
+
+    const LegacyDrawVT = BaseVT.Subset(&.{"draw"});
+
+    const Obj = struct {
+        drawn: bool = false,
+        destroyed: bool = false,
+        pub fn draw(self: *@This()) void {
+            self.drawn = true;
+        }
+        pub fn update(_: *@This(), _: f32) void {}
+        pub fn destroy(self: *@This()) void {
+            self.destroyed = true;
+        }
+    };
+
+    const extended_vt = ExtendedVT.create(Obj);
+    const legacy_draw_vt = extended_vt.projectTo(LegacyDrawVT);
+
+    var obj = Obj{};
+    legacy_draw_vt.vtable.draw(@ptrCast(&obj));
+    try std.testing.expect(obj.drawn);
+
+    extended_vt.vtable.destroy(@ptrCast(&obj));
+    try std.testing.expect(obj.destroyed);
 }
 
 test "DynamicVTable - const self pointer" {
