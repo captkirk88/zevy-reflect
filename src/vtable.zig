@@ -181,7 +181,7 @@ pub fn DynamicVTable(comptime entries: []const FnEntry) type {
             @compileError("DynamicVTable.call: no entry named '" ++ name ++ "'");
         }
 
-        pub fn call(self: Self, provider: anytype, comptime name: [:0]const u8, args: anytype) blk: {
+        pub inline fn call(self: Self, provider: anytype, comptime name: [:0]const u8, args: anytype) blk: {
             const FnType = fnTypeForName(name);
             break :blk @typeInfo(FnType).@"fn".return_type orelse void;
         } {
@@ -256,9 +256,7 @@ pub fn DynamicVTable(comptime entries: []const FnEntry) type {
 
         /// Project this vtable instance to `SubsetVTable`.
         ///
-        /// All entries in `SubsetVTable` must be present in this vtable
-        /// (verified at compile time).  Only function pointer copies happen —
-        /// no heap allocation.
+        /// All entries in `SubsetVTable` must be present in this vtable.
         pub fn projectTo(self: Self, comptime SubsetVTable: type) SubsetVTable {
             comptime if (!containsAll(SubsetVTable)) {
                 @compileError("DynamicVTable.projectTo: SubsetVTable has entries not present in this vtable");
@@ -471,7 +469,9 @@ test "DynamicVTable - Extend preserves legacy subset interfaces" {
     var obj = Obj{};
     legacy_draw_vt.vtable.draw(@ptrCast(&obj));
     try std.testing.expect(obj.drawn);
-
+    obj.drawn = false;
+    extended_vt.vtable.draw(@ptrCast(&obj));
+    try std.testing.expect(obj.drawn);
     extended_vt.vtable.destroy(@ptrCast(&obj));
     try std.testing.expect(obj.destroyed);
 }
