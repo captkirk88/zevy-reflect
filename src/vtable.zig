@@ -4,14 +4,14 @@ const std = @import("std");
 ///
 /// `Fn` must be a function type whose first parameter is `*anyopaque` or
 /// `*const anyopaque` — the type-erased context/self pointer.
-pub const FnEntry = struct {
+pub const VTableEntry = struct {
     name: [:0]const u8,
     Fn: type,
 };
 
 // ── internal helpers ───────────────────────────────────────────────────────
 
-fn validateEntry(comptime entry: FnEntry) void {
+fn validateEntry(comptime entry: VTableEntry) void {
     const info = @typeInfo(entry.Fn);
     if (info != .@"fn") {
         @compileError("DynamicVTable: entry '" ++ entry.name ++
@@ -32,7 +32,7 @@ fn validateEntry(comptime entry: FnEntry) void {
 }
 
 /// Build the storage struct type: one `*const entry.Fn` field per entry.
-fn buildStorageType(comptime entries: []const FnEntry) type {
+fn buildStorageType(comptime entries: []const VTableEntry) type {
     var names: [entries.len][:0]const u8 = undefined;
     var types: [entries.len]type = undefined;
     var attrs: [entries.len]std.builtin.Type.StructField.Attributes = undefined;
@@ -48,16 +48,16 @@ fn buildStorageType(comptime entries: []const FnEntry) type {
     return @Struct(.auto, null, &names, &types, &attrs);
 }
 
-fn mergeEntries(comptime base: []const FnEntry, comptime extra: []const FnEntry) []const FnEntry {
+fn mergeEntries(comptime base: []const VTableEntry, comptime extra: []const VTableEntry) []const VTableEntry {
     comptime {
-        var merged: []const FnEntry = base;
+        var merged: []const VTableEntry = base;
         for (extra) |entry| {
             for (merged) |existing| {
                 if (std.mem.eql(u8, existing.name, entry.name)) {
                     @compileError("DynamicVTable.Extend: duplicate entry name '" ++ entry.name ++ "'");
                 }
             }
-            merged = merged ++ &[_]FnEntry{entry};
+            merged = merged ++ &[_]VTableEntry{entry};
         }
         return merged;
     }
@@ -99,7 +99,7 @@ fn mergeEntries(comptime base: []const FnEntry, comptime extra: []const FnEntry)
 /// const draw_vt  = vtable.projectToSubset(&.{"draw"});
 /// draw_vt.vtable.draw(@ptrCast(&sprite));
 /// ```
-pub fn DynamicVTable(comptime entries: []const FnEntry) type {
+pub fn DynamicVTable(comptime entries: []const VTableEntry) type {
     comptime for (entries) |entry| validateEntry(entry);
 
     const Storage = buildStorageType(entries);
@@ -120,7 +120,7 @@ pub fn DynamicVTable(comptime entries: []const FnEntry) type {
         pub const VTable = Storage;
 
         /// The entries this vtable type was constructed from.
-        pub const fn_entries: []const FnEntry = entries;
+        pub const fn_entries: []const VTableEntry = entries;
 
         /// Storage holding the erased function pointers.
         vtable: Storage,
@@ -157,7 +157,7 @@ pub fn DynamicVTable(comptime entries: []const FnEntry) type {
         ///
         /// This enables additive interface evolution while preserving older
         /// subset interfaces. Existing entry names may not be redefined.
-        pub fn Extend(comptime extra_entries: []const FnEntry) type {
+        pub fn Extend(comptime extra_entries: []const VTableEntry) type {
             return DynamicVTable(mergeEntries(entries, extra_entries));
         }
 
@@ -236,12 +236,12 @@ pub fn DynamicVTable(comptime entries: []const FnEntry) type {
         /// The resulting type reuses the exact `Fn` types from the originals.
         pub fn Subset(comptime names: []const [:0]const u8) type {
             comptime {
-                var subset: []const FnEntry = &.{};
+                var subset: []const VTableEntry = &.{};
                 for (names) |name| {
                     var found = false;
                     for (entries) |entry| {
                         if (std.mem.eql(u8, entry.name, name)) {
-                            subset = subset ++ &[_]FnEntry{entry};
+                            subset = subset ++ &[_]VTableEntry{entry};
                             found = true;
                             break;
                         }

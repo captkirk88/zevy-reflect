@@ -1037,7 +1037,7 @@ pub inline fn Template(comptime Tpl: type) type {
             };
 
             const entry_array = comptime blk: {
-                var out: [ti.fields.len]dynamic_vtable.FnEntry = undefined;
+                var out: [ti.fields.len]dynamic_vtable.VTableEntry = undefined;
                 for (ti.fields, 0..) |field, i| {
                     const field_type = field.type.type;
                     const field_ti = @typeInfo(field_type);

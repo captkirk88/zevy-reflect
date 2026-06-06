@@ -18,7 +18,7 @@ pub const TemplateDeclType = interf.TemplateDeclType;
 pub const Templates = interf.Templates;
 
 pub const DynamicVTable = vtable_mod.DynamicVTable;
-pub const FnEntry = vtable_mod.FnEntry;
+pub const VTableEntry = vtable_mod.VTableEntry;
 
 pub const templates = struct {
     const _common = @import("common_interfaces.zig");
