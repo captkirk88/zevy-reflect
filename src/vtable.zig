@@ -146,10 +146,46 @@ pub fn DynamicVTable(comptime entries: []const VTableEntry) type {
             };
         }
 
-        /// Create a populated dynamic vtable from a provider in one call.
-        pub fn create(comptime provider: anytype) Self {
+        fn createFromBase(base: anytype, comptime provider: anytype) Self {
+            const BaseVTable = @TypeOf(base);
+            comptime if (!Self.containsAll(BaseVTable)) {
+                @compileError("DynamicVTable.create: base vtable is not a subset of destination vtable");
+            };
+
+            const Provider = providerType(provider);
+
+            var stor: Storage = undefined;
+            inline for (entries) |entry| {
+                if (@hasField(BaseVTable.VTable, entry.name)) {
+                    @field(stor, entry.name) = @field(base.vtable, entry.name);
+                } else {
+                    if (!@hasDecl(Provider, entry.name)) {
+                        @compileError("DynamicVTable.create: provider is missing declaration '" ++ entry.name ++ "'");
+                    }
+                    @field(stor, entry.name) = @ptrCast(&@field(Provider, entry.name));
+                }
+            }
+
+            return Self{ .vtable = stor };
+        }
+
+        /// Create a populated dynamic vtable in one call.
+        ///
+        /// Supported forms:
+        /// - `create(Provider)` where Provider declares every entry in this vtable.
+        /// - `create(.{ base_vtable, ExtraProvider })` where entries found in
+        ///   `base_vtable` are inherited and only newly-added entries must be
+        ///   declared by `ExtraProvider`.
+        pub fn create(comptime provider_or_pair: anytype) Self {
+            const PairType = @TypeOf(provider_or_pair);
+            const pair_info = @typeInfo(PairType);
+
+            if (pair_info == .@"struct" and pair_info.@"struct".is_tuple and pair_info.@"struct".fields.len == 2) {
+                return createFromBase(provider_or_pair[0], provider_or_pair[1]);
+            }
+
             var self: Self = undefined;
-            self.populate(provider);
+            self.populate(provider_or_pair);
             return self;
         }
 
