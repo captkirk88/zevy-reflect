@@ -1,3 +1,6 @@
+> [!NOTE]
+> Archived, see [zevy-ecs](https://www.github.com/captkirk88/zevy-ecs) README for details.
+
 # zevy-reflect
 
 A lightweight reflection and change detection library for Zig.
